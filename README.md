@@ -4,21 +4,50 @@
 
 **Markdown 是记忆正文和元数据的事实源。** 一个本机 TypeScript 服务负责自动写入；SQLite 保存采集事件、提炼任务、召回回执和搜索索引。没有向量数据库，也不需要额外的模型 API Key：后台提炼使用已登录的 Codex CLI。
 
-## 快速启动
+## 编译并安装全局命令
 
-需要 Node.js 24+、pnpm 10、可用的 Codex CLI 登录。当前版本优先面向 macOS。
+需要 Node.js 24+、pnpm 10、npm，以及可用的 Codex CLI 登录。当前版本优先面向 macOS。源码用 pnpm 安装依赖和编译，编译产物用 npm 安装成全局命令 `umem`。
+
+### 1. 编译与打包
+
+在本项目根目录运行：
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm build
-node dist/cli.js init
-node dist/cli.js serve
+npm pack
 ```
 
-另开终端，在项目目录打开管理页：
+`pnpm build` 生成 `dist/`，包含 CLI、服务端和网页。`npm pack` 将它们和适配器打成安装包；当前版本的文件名为 `local-user-memory-0.1.0.tgz`。以后版本号变化时，以下命令使用 `npm pack` 实际输出的文件名。
+
+### 2. 使用 npm 安装到全局
 
 ```sh
-node dist/cli.js web
+npm install --global ./local-user-memory-0.1.0.tgz
+umem --version
+umem --help
+```
+
+这会安装本地编译的包，不需要发布到 npm registry。全局安装后，可以在任意目录运行 `umem`，不再需要进入源码目录执行 `node dist/cli.js`。
+
+如果提示 `umem: command not found`，先查看 `npm prefix --global`，确认该目录下的 `bin` 已在 `PATH` 中。使用 nvm 等 Node 版本管理器时，全局安装通常属于当前 Node 版本；切换 Node 版本后可能需要重新安装。
+
+## 初始化并启动公共记忆
+
+首次使用执行：
+
+```sh
+umem init
+umem serve
+```
+
+`umem init` 创建默认数据目录 `~/.user-memory`、配置和访问密钥；重复执行不会清空已有记忆。`umem serve` 在当前终端前台运行，使用期间保留这个终端，按 `Ctrl+C` 停止服务。
+
+另开一个终端打开管理页、检查状态：
+
+```sh
+umem web
+umem doctor
 ```
 
 服务默认监听 `127.0.0.1:43123`。`web` 用 URL fragment 传递本机访问密钥，页面读取后立即移除 fragment，密钥只留在当前标签页的 sessionStorage。直接打开裸 URL 不会自动获得访问权限。
@@ -26,20 +55,102 @@ node dist/cli.js web
 自定义数据目录时，所有命令保持相同的 `--home`，或设置 `UMEM_HOME`：
 
 ```sh
-node dist/cli.js --home /绝对路径/公共记忆 init
-node dist/cli.js --home /绝对路径/公共记忆 serve
+umem --home /绝对路径/公共记忆 init
+umem --home /绝对路径/公共记忆 serve
+umem --home /绝对路径/公共记忆 web
 ```
 
 开发界面使用 `pnpm dev`；后台仍需启动。日常使用构建后的管理页即可。`serve --no-worker` 暂停自动提炼，仍接受采集、检索和显式写入；此参数只影响本次运行。
+
+## Codex 如何初始化接入
+
+这里有两项独立的初始化：**Codex CLI 登录**供后台提炼使用，**`umem setup codex`** 将公共记忆接入 Codex 的 hooks 和 MCP。仅执行 `umem init` 不会修改 Codex 配置。
+
+### 1. 确认 Codex CLI 已安装和登录
+
+如果还没有安装 Codex CLI：
+
+```sh
+npm install --global @openai/codex
+```
+
+检查版本与登录状态：
+
+```sh
+codex --version
+codex login status
+```
+
+如果尚未登录，再执行 `codex login`，按提示完成登录。已有可用登录时可以跳过。安装了 Codex 桌面应用不代表终端中的 `codex` 命令一定可用；后台提炼需要能启动该 CLI。
+
+### 2. 给 Codex 安装公共记忆配置
+
+保持 `umem serve` 运行，在另一个终端执行：
+
+```sh
+umem setup codex          # 预览将修改哪些文件
+umem setup codex --apply  # 备份并写入 hooks 和 MCP 配置
+```
+
+默认修改：
+
+- `~/.codex/hooks.json`：添加 SessionStart、UserPromptSubmit 和 Stop hooks。
+- `~/.codex/config.toml`：添加 `mcp_servers.user-memory`。
+
+配置中使用当前 Node 和已安装 CLI 的绝对路径，不依赖 Codex 启动时能否从 PATH 找到 `umem`。这一步不导入旧会话，也不关闭 Codex 自带的记忆。
+
+使用自定义公共记忆目录时，接入也必须带相同的 `--home`：
+
+```sh
+umem --home /绝对路径/公共记忆 setup codex --apply
+```
+
+安装器默认按 `~/.codex` 写入。若 Codex 使用自定义 `CODEX_HOME`，当前安装器不会自动跟随该变量；需要将生成的 hooks 和 MCP 条目合并到实际配置目录，不能仅在默认目录运行完就视为接入成功。
+
+### 3. 重启 Codex 并完成验证
+
+重新启动 Codex CLI，或完全退出并重新打开 Codex 桌面应用，再新建会话。按宿主提示完成 hooks 信任；若相应版本关闭了 `codex_hooks` 功能，需要在宿主中启用。系统 CLI 与桌面应用内置运行时可能不同，分别验证。
+
+```sh
+codex mcp list
+umem doctor
+```
+
+`codex mcp list` 应出现 `user-memory`；这表示已登记配置，实际工具调用还需验证。可以在新 Codex 会话中发送：
+
+> 请调用公共记忆的 memory_remember 工具，记住一条全局偏好：我的验收标记是 umem-codex-1106。
+
+然后再新建一个会话询问：
+
+> 请从公共记忆中查找我的验收标记。
+
+核对模型是否调用了公共记忆工具，并在 `umem web` 中检查正文和来源。自动采集另行验证：提交一条明确的长期偏好，等待默认 30 秒空闲期和提炼完成，再通过 `umem jobs`、`umem doctor` 查看任务和采集/召回时间。
+
+只接入一次即可覆盖使用同一套 Codex 用户配置的新会话，无需在每个项目重复安装。项目范围会根据会话目录识别；目录别名可以用 `umem project bind` 登记。
+
+## 更新或卸载全局命令
+
+更新时，在源码目录重新执行 `pnpm install --frozen-lockfile`、`pnpm build`、`npm pack`，再用 `npm install --global ./新安装包.tgz` 覆盖安装。更新前先停止正在运行的服务，更新后重新启动。`~/.user-memory` 独立于 npm 安装目录，更新不会清空已有数据。
+
+卸载时，先撤销已接入工具的配置，再卸载命令：
+
+```sh
+umem uninstall codex --apply
+# 其他已接入工具也分别执行 umem uninstall <agent> --apply
+# 随后停止 umem serve；若装过登录启动项，也先停用并移除它
+npm uninstall --global @local/user-memory
+```
+
+卸载全局包不会删除记忆数据。macOS 登录启动项的停用方式见文末。
 
 ## 接入工具
 
 先启动服务，再预览安装内容：
 
 ```sh
-node dist/cli.js setup codex
-node dist/cli.js setup codex --apply
-node dist/cli.js doctor
+umem setup codex
+umem setup codex --apply
+umem doctor
 ```
 
 `codex` 可替换为 `zcode`、`claude`、`pi`、`deepseek`、`hermes`。
@@ -58,8 +169,8 @@ node dist/cli.js doctor
 所有安装都先备份，重复安装相同配置不增加条目。备份可能包含原配置中的敏感值，保存在权限受限的数据目录。安装期间若文件发生变化则拒绝覆盖。
 
 ```sh
-node dist/cli.js uninstall codex          # 预览
-node dist/cli.js uninstall codex --apply  # 恢复原配置，保留记忆库
+umem uninstall codex          # 预览
+umem uninstall codex --apply  # 恢复原配置，保留记忆库
 ```
 
 如果安装后配置又被手动修改，卸载会停止，保留备份供人工合并，不会覆盖用户的新修改。
@@ -67,7 +178,7 @@ node dist/cli.js uninstall codex --apply  # 恢复原配置，保留记忆库
 Hermes 多 profile 分别指定实际目录：
 
 ```sh
-node dist/cli.js setup hermes --hermes-home /绝对路径/hermes-profile --apply
+umem setup hermes --hermes-home /绝对路径/hermes-profile --apply
 ```
 
 provider 按 `hermes_home` 区分会话来源，记忆仍写入指定的公共数据目录。没有宿主传入的 `cwd` 时只使用全局记忆；不会把 Gateway 的进程目录误当成项目。provider 切换会影响原生记忆，因此本安装器不自动修改 `memory.provider`，具体片段见命令输出。
@@ -76,22 +187,22 @@ provider 按 `hermes_home` 区分会话来源，记忆仍写入指定的公共�
 
 ```sh
 # 直接记住、查询、纠正和撤回
-node dist/cli.js memory add '沟通语言' '默认使用中文沟通'
-node dist/cli.js memory list --query 中文
-node dist/cli.js memory get <id>
-node dist/cli.js memory correct <id> '按用户新要求修正后的内容'
-node dist/cli.js memory forget <id>
+umem memory add '沟通语言' '默认使用中文沟通'
+umem memory list --query 中文
+umem memory get <id>
+umem memory correct <id> '按用户新要求修正后的内容'
+umem memory forget <id>
 
 # 看当前项目实际会得到哪些记忆
-node dist/cli.js recall '构建方式' --cwd /绝对路径/项目
+umem recall '构建方式' --cwd /绝对路径/项目
 
 # 将另一个目录绑定到相同项目
-node dist/cli.js project list
-node dist/cli.js project bind /另一个目录 --to <project-id>
+umem project list
+umem project bind /另一个目录 --to <project-id>
 
 # 失败任务不会无限重试，可检查后手动重试
-node dist/cli.js jobs
-node dist/cli.js jobs --retry <job-id>
+umem jobs
+umem jobs --retry <job-id>
 ```
 
 网页支持相同的记忆编辑、候选批准、撤回、来源查看、修订历史、导入预览、任务重试和提炼配置。
@@ -103,9 +214,9 @@ MCP 提供 `memory_search`、`memory_get`、`memory_remember`、`memory_correct`
 不会在安装时扫描所有历史会话。只读取你明确指定的 Markdown 文件或目录：
 
 ```sh
-node dist/cli.js import /绝对路径/原生记忆目录
-node dist/cli.js import /绝对路径/某条记忆.md --apply
-node dist/cli.js import /项目记忆目录 --project <project-id> --apply
+umem import /绝对路径/原生记忆目录
+umem import /绝对路径/某条记忆.md --apply
+umem import /项目记忆目录 --project <project-id> --apply
 ```
 
 更推荐网页导入：先查看原文预览，再勾选文件。索引和汇总文件默认不选，避免重复；导入后统一进入待审核，批准后才参与召回。预览到确认期间源文件变动会拒绝导入。原文件不修改。
@@ -162,7 +273,7 @@ sources:
 导出可携带的记忆文件：
 
 ```sh
-node dist/cli.js export /一个尚不存在的备份目录
+umem export /一个尚不存在的备份目录
 ```
 
 导出包含 Markdown、历史与项目映射，不含运行队列或访问密钥。需要完整且一致的备份时，先停止服务，再复制整个数据目录，包括 SQLite 文件及可能存在的 WAL。
@@ -236,8 +347,8 @@ pnpm test:web
 macOS 登录启动项：
 
 ```sh
-node dist/cli.js service          # 查看路径与启动方式
-node dist/cli.js service --apply  # 先停止手动 serve，再执行
+umem service          # 查看路径与启动方式
+umem service --apply  # 先停止手动 serve，再执行
 ```
 
 停用：`launchctl bootout gui/$(id -u)/local.user-memory`，再移除 `~/Library/LaunchAgents/local.user-memory.plist`。宿主接入配置和记忆数据保持原样。
