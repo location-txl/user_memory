@@ -88,8 +88,8 @@ codex login status
 保持 `umem serve` 运行，在另一个终端执行：
 
 ```sh
-umem setup codex          # 预览将修改哪些文件
-umem setup codex --apply  # 备份并写入 hooks 和 MCP 配置
+umem setup codex --dry-run  # 可选，预览将修改哪些文件
+umem setup codex            # 备份并写入 hooks 和 MCP 配置
 ```
 
 默认修改：
@@ -102,7 +102,7 @@ umem setup codex --apply  # 备份并写入 hooks 和 MCP 配置
 使用自定义公共记忆目录时，接入也必须带相同的 `--home`：
 
 ```sh
-umem --home /绝对路径/公共记忆 setup codex --apply
+umem --home /绝对路径/公共记忆 setup codex
 ```
 
 安装器默认按 `~/.codex` 写入。若 Codex 使用自定义 `CODEX_HOME`，当前安装器不会自动跟随该变量；需要将生成的 hooks 和 MCP 条目合并到实际配置目录，不能仅在默认目录运行完就视为接入成功。
@@ -135,8 +135,8 @@ umem doctor
 卸载时，先撤销已接入工具的配置，再卸载命令：
 
 ```sh
-umem uninstall codex --apply
-# 其他已接入工具也分别执行 umem uninstall <agent> --apply
+umem uninstall codex
+# 其他已接入工具也分别执行 umem uninstall <agent>
 # 随后停止 umem serve；若装过登录启动项，也先停用并移除它
 npm uninstall --global @local/user-memory
 ```
@@ -145,11 +145,11 @@ npm uninstall --global @local/user-memory
 
 ## 接入工具
 
-先启动服务，再预览安装内容：
+先启动服务，再安装接入配置：
 
 ```sh
+umem setup codex --dry-run  # 可选，预览配置变更
 umem setup codex
-umem setup codex --apply
 umem doctor
 ```
 
@@ -169,8 +169,8 @@ umem doctor
 所有安装都先备份，重复安装相同配置不增加条目。备份可能包含原配置中的敏感值，保存在权限受限的数据目录。安装期间若文件发生变化则拒绝覆盖。
 
 ```sh
-umem uninstall codex          # 预览
-umem uninstall codex --apply  # 恢复原配置，保留记忆库
+umem uninstall codex --dry-run  # 可选，预览将恢复或移除的文件
+umem uninstall codex            # 恢复原配置，保留记忆库
 ```
 
 如果安装后配置又被手动修改，卸载会停止，保留备份供人工合并，不会覆盖用户的新修改。
@@ -178,7 +178,7 @@ umem uninstall codex --apply  # 恢复原配置，保留记忆库
 Hermes 多 profile 分别指定实际目录：
 
 ```sh
-umem setup hermes --hermes-home /绝对路径/hermes-profile --apply
+umem setup hermes --hermes-home /绝对路径/hermes-profile
 ```
 
 provider 按 `hermes_home` 区分会话来源，记忆仍写入指定的公共数据目录。没有宿主传入的 `cwd` 时只使用全局记忆；不会把 Gateway 的进程目录误当成项目。provider 切换会影响原生记忆，因此本安装器不自动修改 `memory.provider`，具体片段见命令输出。
@@ -214,9 +214,9 @@ MCP 提供 `memory_search`、`memory_get`、`memory_remember`、`memory_correct`
 不会在安装时扫描所有历史会话。只读取你明确指定的 Markdown 文件或目录：
 
 ```sh
-umem import /绝对路径/原生记忆目录
-umem import /绝对路径/某条记忆.md --apply
-umem import /项目记忆目录 --project <project-id> --apply
+umem import /绝对路径/原生记忆目录 --dry-run  # 可选，仅预览
+umem import /绝对路径/某条记忆.md
+umem import /项目记忆目录 --project <project-id>
 ```
 
 更推荐网页导入：先查看原文预览，再勾选文件。索引和汇总文件默认不选，避免重复；导入后统一进入待审核，批准后才参与召回。预览到确认期间源文件变动会拒绝导入。原文件不修改。
@@ -347,8 +347,8 @@ pnpm test:web
 macOS 登录启动项：
 
 ```sh
-umem service          # 查看路径与启动方式
-umem service --apply  # 先停止手动运行的 umem serve
+umem service --dry-run  # 可选，查看启动项路径和停用命令
+umem service            # 先停止手动运行的 umem serve
 ```
 
 停用：`launchctl bootout gui/$(id -u)/local.user-memory`，再移除 `~/Library/LaunchAgents/local.user-memory.plist`。宿主接入配置和记忆数据保持原样。

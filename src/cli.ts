@@ -105,8 +105,8 @@ program
   });
 program
   .command("setup <agent>")
-  .description("预览或应用宿主配置，先备份再写入")
-  .option("--apply", "应用列出的配置变更")
+  .description("备份并应用宿主配置")
+  .option("--dry-run", "仅预览将修改的文件")
   .option("--target-home <path>", "宿主配置所在用户目录（用于隔离验收）")
   .option("--hermes-home <path>", "Hermes 目标 profile 的实际数据目录")
   .action(async (agent, o) => {
@@ -117,25 +117,25 @@ program
       o.hermesHome,
     );
     print(
-      o.apply
-        ? await applySetup(home(), plan)
-        : {
+      o.dryRun
+        ? {
             applied: false,
             files: plan.changes.map((c) => ({
               path: c.path,
               action: c.before === undefined ? "新增" : "合并",
             })),
             instructions: plan.instructions,
-            next: "加 --apply 应用；不会关闭原生记忆",
-          },
+            next: "去掉 --dry-run 后重新运行即可应用",
+          }
+        : await applySetup(home(), plan),
     );
   });
 program
   .command("uninstall <agent>")
-  .description("预览或恢复安装前配置，保留记忆数据")
-  .option("--apply")
+  .description("恢复安装前配置，保留记忆数据")
+  .option("--dry-run", "仅列出将恢复或移除的文件")
   .action(async (agent, o) =>
-    print(await uninstall(home(), HostSchema.parse(agent), o.apply)),
+    print(await uninstall(home(), HostSchema.parse(agent), !o.dryRun)),
   );
 program
   .command("recall [query]")
@@ -239,8 +239,8 @@ project
   );
 program
   .command("import <path>")
-  .description("预览原生 MD；--apply 将预览文件保存为待审核记忆")
-  .option("--apply")
+  .description("将指定的 Markdown 文件保存为待审核记忆")
+  .option("--dry-run", "仅预览待导入的文件")
   .option("--project <id>")
   .action(async (path, o) => {
     const files = await client().request<{ path: string; hash: string }[]>(
@@ -248,16 +248,16 @@ program
       { method: "POST", body: { path: resolve(path) } },
     );
     print(
-      o.apply
-        ? await client().request("/imports/confirm", {
+      o.dryRun
+        ? files
+        : await client().request("/imports/confirm", {
             method: "POST",
             body: {
               files: files.map(({ path, hash }) => ({ path, hash })),
               scope: o.project ? "project" : "global",
               projectId: o.project,
             },
-          })
-        : files,
+          }),
     );
   });
 program
@@ -291,14 +291,13 @@ program
   });
 program
   .command("service")
-  .description("生成或安装 macOS 登录启动项")
-  .option("--apply")
+  .description("安装 macOS 登录启动项")
+  .option("--dry-run", "仅查看启动项路径和停用命令")
   .action(async (o) => {
     if (process.platform !== "darwin")
       throw new Error(
         "登录启动项目前仅支持 macOS。其他系统可运行 umem serve。",
       );
-    await initHome(home());
     const path = join(
       homedir(),
       "Library",
@@ -317,13 +316,14 @@ program
       "cli.js",
     );
     const content = `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>local.user-memory</string><key>ProgramArguments</key><array>${[process.execPath, cli, "--home", home(), "serve"].map((s) => `<string>${esc(s)}</string>`).join("")}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>EnvironmentVariables</key><dict><key>PATH</key><string>${esc(process.env.PATH ?? "/usr/bin:/bin")}</string></dict><key>StandardOutPath</key><string>${esc(join(home(), "service.log"))}</string><key>StandardErrorPath</key><string>${esc(join(home(), "service.log"))}</string></dict></plist>`;
-    if (o.apply) {
+    if (!o.dryRun) {
+      await initHome(home());
       await mkdir(dirname(path), { recursive: true });
       await atomicWrite(path, content);
       await exec("launchctl", ["bootstrap", `gui/${process.getuid!()}`, path]);
     }
     print({
-      applied: !!o.apply,
+      applied: !o.dryRun,
       path,
       stop: `launchctl bootout gui/${process.getuid!()}/local.user-memory`,
       note: "应用前先停止手动运行的 umem serve。移除启动项可删除上述 plist。",

@@ -54,10 +54,10 @@ export function Operations({
       <div className="instruction">
         <Terminal size={22} />
         <div>
-          <h2>安装前，先看变更</h2>
+          <h2>安装接入配置</h2>
           <p>
-            在任意目录运行下方命令预览；确认后加 <code>--apply</code>{" "}
-            应用。安装会保留备份，原生记忆不会被自动关闭。
+            在任意目录运行下方命令即可安装。只想查看变更时，加{" "}
+            <code>--dry-run</code>。安装会保留备份，原生记忆不会被自动关闭。
           </p>
         </div>
       </div>
