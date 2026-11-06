@@ -347,11 +347,13 @@ pnpm test:web
 macOS 登录启动项：
 
 ```sh
-umem service --dry-run  # 可选，查看启动项路径和停用命令
-umem service            # 先停止手动运行的 umem serve
+umem service install --dry-run  # 查看启动项路径
+umem service install            # 先停止手动运行的 umem serve
+umem service install --force    # 替换启动项配置并重新加载
+umem service uninstall          # 停止服务并移除启动项
 ```
 
-停用：`launchctl bootout gui/$(id -u)/local.user-memory`，再移除 `~/Library/LaunchAgents/local.user-memory.plist`。宿主接入配置和记忆数据保持原样。
+普通安装会保留已有启动项配置，若已加载则直接返回。要更新启动项使用的 Node 路径或 `--home`，请使用 `install --force`，服务会短暂重启。卸载保留宿主接入配置和记忆数据。
 
 ## 项目文件
 

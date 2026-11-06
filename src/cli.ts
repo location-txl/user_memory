@@ -1,12 +1,20 @@
 #!/usr/bin/env node
 import { Command } from "commander";
-import { readFile, mkdir, cp } from "node:fs/promises";
+import { readFile, mkdir, cp, rm } from "node:fs/promises";
 import { join, resolve, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { initHome, memoryHome, loadConfig, atomicWrite } from "./config.js";
+import { setTimeout as delay } from "node:timers/promises";
+import lockfile from "proper-lockfile";
+import {
+  initHome,
+  memoryHome,
+  loadConfig,
+  atomicWrite,
+  readOptional,
+} from "./config.js";
 import { MemoryClient } from "./client.js";
 import { startDaemon } from "./daemon.js";
 import { runMcp } from "./mcp.js";
@@ -289,21 +297,71 @@ program
       note: "需要跨文件一致快照时，请先停服务再导出。运行队列未导出；完整备份需停服务后复制整个数据目录。",
     });
   });
-program
-  .command("service")
-  .description("安装 macOS 登录启动项")
-  .option("--dry-run", "仅查看启动项路径和停用命令")
-  .action(async (o) => {
-    if (process.platform !== "darwin")
-      throw new Error(
-        "登录启动项目前仅支持 macOS。其他系统可运行 umem serve。",
+const service = program.command("service").description("管理 macOS 登录启动项");
+service.action(() => service.outputHelp());
+service
+  .command("install")
+  .description("安装并加载登录启动项")
+  .option("--force", "替换已有启动项并重新加载")
+  .option("--dry-run", "仅查看启动项路径和卸载命令")
+  .action((options) => configureService("install", options));
+service
+  .command("uninstall")
+  .description("停止服务并移除登录启动项")
+  .action(() => configureService("uninstall"));
+
+async function configureService(
+  action: "install" | "uninstall",
+  { force, dryRun }: { force?: boolean; dryRun?: boolean } = {},
+) {
+  if (process.platform !== "darwin")
+    throw new Error("登录启动项目前仅支持 macOS。其他系统可运行 umem serve。");
+  const label = "local.user-memory";
+  const path = join(homedir(), "Library", "LaunchAgents", `${label}.plist`);
+  if (dryRun) {
+    print({ applied: false, path, uninstall: "umem service uninstall" });
+    return;
+  }
+  const domain = `gui/${process.getuid!()}`;
+  const target = `${domain}/${label}`;
+  const release = await lockfile.lock(homedir(), {
+    lockfilePath: join(homedir(), ".umem-service.lock"),
+  });
+  try {
+    const isLoaded = () =>
+      exec("launchctl", ["print", target]).then(
+        () => true,
+        (error: NodeJS.ErrnoException) => {
+          // launchctl print returns 113 for a missing service in an existing domain.
+          if (Number(error.code) === 113) return false;
+          throw error;
+        },
       );
-    const path = join(
-      homedir(),
-      "Library",
-      "LaunchAgents",
-      "local.user-memory.plist",
-    );
+    const stop = async () => {
+      await exec("launchctl", ["bootout", target]);
+      // bootout can return before launchd removes the service from its domain.
+      for (let i = 0; i < 100; i++) {
+        if (!(await isLoaded())) return;
+        await delay(100);
+      }
+      throw new Error("等待登录启动项卸载超时。");
+    };
+    const loaded = await isLoaded();
+    if (action === "uninstall") {
+      if (loaded) await stop();
+      await rm(path, { force: true });
+      print({ installed: false, path });
+      return;
+    }
+    if (loaded && !force) {
+      print({ applied: false, installed: true, path, note: "启动项已加载。" });
+      return;
+    }
+    if (!force && (await readOptional(path)) !== undefined) {
+      await exec("launchctl", ["bootstrap", domain, path]);
+      print({ applied: true, installed: true, path });
+      return;
+    }
     const esc = (s: string) =>
       s
         .replaceAll("&", "&amp;")
@@ -315,20 +373,17 @@ program
       "dist",
       "cli.js",
     );
-    const content = `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>local.user-memory</string><key>ProgramArguments</key><array>${[process.execPath, cli, "--home", home(), "serve"].map((s) => `<string>${esc(s)}</string>`).join("")}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>EnvironmentVariables</key><dict><key>PATH</key><string>${esc(process.env.PATH ?? "/usr/bin:/bin")}</string></dict><key>StandardOutPath</key><string>${esc(join(home(), "service.log"))}</string><key>StandardErrorPath</key><string>${esc(join(home(), "service.log"))}</string></dict></plist>`;
-    if (!o.dryRun) {
-      await initHome(home());
-      await mkdir(dirname(path), { recursive: true });
-      await atomicWrite(path, content);
-      await exec("launchctl", ["bootstrap", `gui/${process.getuid!()}`, path]);
-    }
-    print({
-      applied: !o.dryRun,
-      path,
-      stop: `launchctl bootout gui/${process.getuid!()}/local.user-memory`,
-      note: "应用前先停止手动运行的 umem serve。移除启动项可删除上述 plist。",
-    });
-  });
+    const content = `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>${label}</string><key>ProgramArguments</key><array>${[process.execPath, cli, "--home", home(), "serve"].map((s) => `<string>${esc(s)}</string>`).join("")}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>EnvironmentVariables</key><dict><key>PATH</key><string>${esc(process.env.PATH ?? "/usr/bin:/bin")}</string></dict><key>StandardOutPath</key><string>${esc(join(home(), "service.log"))}</string><key>StandardErrorPath</key><string>${esc(join(home(), "service.log"))}</string></dict></plist>`;
+    await initHome(home());
+    await mkdir(dirname(path), { recursive: true });
+    await atomicWrite(path, content);
+    if (loaded) await stop();
+    await exec("launchctl", ["bootstrap", domain, path]);
+    print({ applied: true, installed: true, path });
+  } finally {
+    await release();
+  }
+}
 await program.parseAsync().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
