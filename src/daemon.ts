@@ -5,6 +5,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFile } from "node:fs/promises";
 import { initHome } from "./config.js";
+import { cliCommand } from "./cli-command.js";
 import { MemoryStore } from "./memory/store.js";
 import { MemoryWorker } from "./memory/worker.js";
 import { createApp } from "./server.js";
@@ -50,7 +51,7 @@ export async function startDaemon(
   worker.start();
   if (!options.quiet)
     console.log(
-      `公共记忆已启动：http://127.0.0.1:${config.port}\n数据目录：${home}\n使用 umem web 打开已授权的管理页。`,
+      `公共记忆已启动：http://127.0.0.1:${config.port}\n数据目录：${home}\n在另一个终端运行以下命令打开管理页：\n${cliCommand(home)} web`,
     );
   const close = async () => {
     await worker.stop();

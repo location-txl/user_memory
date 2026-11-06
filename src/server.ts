@@ -60,7 +60,10 @@ export function createApp(
       !timingSafeEqual(supplied, expected)
     )
       return c.json(
-        { error: "请使用 umem web 打开管理页，或提供本机访问密钥" },
+        {
+          error:
+            "请用 umem web 打开管理页。若使用自定义数据目录，请沿用启动服务时的 --home 或 UMEM_HOME。API 请求需提供本机访问密钥。",
+        },
         401,
       );
     if (Number(c.req.header("Content-Length") ?? 0) > 2_000_000)

@@ -35,8 +35,9 @@ program
   .command("init")
   .description("创建本地数据目录")
   .action(async () => {
-    await initHome(home());
-    print({ home: home(), next: "pnpm build，然后 node dist/cli.js serve" });
+    const directory = home();
+    await initHome(directory);
+    print({ home: directory });
   });
 program
   .command("serve")
@@ -294,7 +295,9 @@ program
   .option("--apply")
   .action(async (o) => {
     if (process.platform !== "darwin")
-      throw new Error("登录启动项目前仅支持 macOS；其他系统使用 serve");
+      throw new Error(
+        "登录启动项目前仅支持 macOS。其他系统可运行 umem serve。",
+      );
     await initHome(home());
     const path = join(
       homedir(),
@@ -323,7 +326,7 @@ program
       applied: !!o.apply,
       path,
       stop: `launchctl bootout gui/${process.getuid!()}/local.user-memory`,
-      note: "应用前先停止手动启动的 serve；移除启动项可删除上述 plist。",
+      note: "应用前先停止手动运行的 umem serve。移除启动项可删除上述 plist。",
     });
   });
 await program.parseAsync().catch((error) => {

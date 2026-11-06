@@ -5,6 +5,7 @@ import { mkdir, readFile, unlink } from "node:fs/promises";
 import { z } from "zod";
 import { stringify } from "yaml";
 import { atomicWrite, initHome, readOptional } from "../config.js";
+import { cliCommand, shellQuote } from "../cli-command.js";
 import { fingerprint } from "../memory/files.js";
 
 export const HostSchema = z.enum([
@@ -23,7 +24,6 @@ export type SetupPlan = {
   instructions: string[];
 };
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 const ReceiptSchema = z.object({
   host: HostSchema,
   changes: z.array(
@@ -45,7 +45,7 @@ export async function planSetup(
     host,
     changes: [],
     instructions: [
-      "重启宿主或重新加载扩展后，运行 doctor 查看实际采集与召回时间。原生记忆保持原样；完成迁移验收后再切换。",
+      `重启宿主或重新加载扩展后，运行 ${cliCommand(home)} doctor 查看采集与召回时间。原生记忆保持原样；完成迁移验收后再切换。`,
     ],
   };
   const cli = join(root, "dist", "cli.js");

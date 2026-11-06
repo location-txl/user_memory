@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Check, Copy, RefreshCw, Upload, Terminal } from "lucide-react";
 import type { Project } from "../contracts.js";
 import type { Config } from "../config.js";
+import { cliCommand } from "../cli-command.js";
 import { api, date, statusNames } from "./api.js";
 
 export type Status = {
@@ -55,7 +56,7 @@ export function Operations({
         <div>
           <h2>安装前，先看变更</h2>
           <p>
-            在项目目录运行下方命令预览；确认后加 <code>--apply</code>{" "}
+            在任意目录运行下方命令预览；确认后加 <code>--apply</code>{" "}
             应用。安装会保留备份，原生记忆不会被自动关闭。
           </p>
         </div>
@@ -108,9 +109,6 @@ export function Operations({
       </section>
     </div>
   );
-}
-function cliCommand(home?: string) {
-  return `node dist/cli.js${home ? ` --home '${home.replaceAll("'", "'\\''")}'` : ""}`;
 }
 function Command({ value }: { value: string }) {
   const [copied, setCopied] = useState(false);

@@ -137,9 +137,6 @@ function App() {
           <div className="alert" role="alert">
             {error}
             <button onClick={refresh}>重新连接</button>
-            <p>
-              首次访问请在终端运行 <code>node dist/cli.js web</code>。
-            </p>
           </div>
         )}
         {status?.errors.map((message, i) => (

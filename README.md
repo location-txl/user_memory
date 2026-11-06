@@ -28,7 +28,7 @@ umem --version
 umem --help
 ```
 
-这会安装本地编译的包，不需要发布到 npm registry。全局安装后，可以在任意目录运行 `umem`，不再需要进入源码目录执行 `node dist/cli.js`。
+这会安装本地编译的包，无需发布到 npm registry。全局安装后，可以在任意目录运行 `umem`。
 
 如果提示 `umem: command not found`，先查看 `npm prefix --global`，确认该目录下的 `bin` 已在 `PATH` 中。使用 nvm 等 Node 版本管理器时，全局安装通常属于当前 Node 版本；切换 Node 版本后可能需要重新安装。
 
@@ -41,7 +41,7 @@ umem init
 umem serve
 ```
 
-`umem init` 创建默认数据目录 `~/.user-memory`、配置和访问密钥；重复执行不会清空已有记忆。`umem serve` 在当前终端前台运行，使用期间保留这个终端，按 `Ctrl+C` 停止服务。
+`umem init` 创建默认数据目录 `~/.user-memory`、配置和访问密钥，重复执行会保留已有记忆。`umem serve` 也会自动初始化数据目录，可以直接运行。服务在当前终端前台运行，按 `Ctrl+C` 停止。
 
 另开一个终端打开管理页、检查状态：
 
@@ -60,7 +60,7 @@ umem --home /绝对路径/公共记忆 serve
 umem --home /绝对路径/公共记忆 web
 ```
 
-开发界面使用 `pnpm dev`；后台仍需启动。日常使用构建后的管理页即可。`serve --no-worker` 暂停自动提炼，仍接受采集、检索和显式写入；此参数只影响本次运行。
+开发界面使用 `pnpm dev`；后台仍需启动。日常使用构建后的管理页即可。`umem serve --no-worker` 暂停自动提炼，仍接受采集、检索和显式写入；此参数只影响本次运行。
 
 ## Codex 如何初始化接入
 
@@ -348,7 +348,7 @@ macOS 登录启动项：
 
 ```sh
 umem service          # 查看路径与启动方式
-umem service --apply  # 先停止手动 serve，再执行
+umem service --apply  # 先停止手动运行的 umem serve
 ```
 
 停用：`launchctl bootout gui/$(id -u)/local.user-memory`，再移除 `~/Library/LaunchAgents/local.user-memory.plist`。宿主接入配置和记忆数据保持原样。
