@@ -1,0 +1,59 @@
+{
+  "name": "@local/user-memory",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "以 Markdown 为准的单机跨 Agent 公共记忆",
+  "bin": {
+    "umem": "dist/cli.js"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@10.22.0",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "serve": "tsx src/cli.ts serve",
+    "umem": "tsx src/cli.ts",
+    "build": "tsc -p tsconfig.server.json && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:web": "pnpm build && node scripts/verify-web.mjs",
+    "test:hermes": "python3 tests/hermes_provider_test.py",
+    "format:check": "prettier --check src tests scripts package.json README.md docs",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.6",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "better-sqlite3": "^13.0.3",
+    "commander": "^15.0.0",
+    "hono": "^4.13.16",
+    "lucide-react": "^1.70.0",
+    "proper-lockfile": "^4.1.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.0.0",
+    "@types/proper-lockfile": "^4.1.4",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^6.2.1",
+    "prettier": "^3.9.10",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.6",
+    "vitest": "^5.1.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild"
+    ]
+  }
+}
