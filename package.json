@@ -18,6 +18,8 @@
     "build": "tsc -p tsconfig.server.json && vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:backend": "vitest run tests/backend/ && pnpm test:hermes",
+    "test:integration": "vitest run tests/integration/",
     "test:web": "pnpm build && node scripts/verify-web.mjs",
     "test:hermes": "python3 tests/hermes_provider_test.py",
     "format:check": "prettier --check src tests scripts package.json README.md docs",

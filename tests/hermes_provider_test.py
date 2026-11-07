@@ -1,11 +1,13 @@
 """Run with Python's standard library; the host ABC is replaced by a contract fixture."""
 import importlib.util
 import json
+import os
 import shutil
 import sys
 import tempfile
 import types
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 host_module = types.ModuleType("agent.memory_provider")
@@ -63,6 +65,24 @@ class ProviderTest(unittest.TestCase):
         self.assertNotIn("cwd", calls[0][1])
         provider.sync_turn("secret=abcde sk-abcdefghijklmnopqr", "收到")
         self.assertNotIn("abcde", json.dumps(self.events()))
+
+    def test_offline_recall_does_not_prevent_later_capture(self):
+        provider = self.create(cwd=str(self.root))
+
+        def offline(endpoint, body):
+            raise OSError("service offline")
+
+        provider.request = offline
+        with self.assertLogs(provider.__class__.__module__, level="WARNING"):
+            self.assertEqual(provider.prefetch("问题"), "")
+        provider.sync_turn("真实偏好", "收到")
+        self.assertEqual([event["role"] for event in self.events()], ["user", "assistant"])
+
+    def test_worker_turn_does_not_create_spool_files(self):
+        provider = self.create()
+        with patch.dict(os.environ, {"UMEM_WORKER": "1"}):
+            provider.sync_turn("worker input", "worker output")
+        self.assertFalse((self.home / "spool").exists())
 
 
 if __name__ == "__main__":

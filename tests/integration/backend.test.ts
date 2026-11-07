@@ -1,18 +1,27 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { mkdtemp, rm, readFile, mkdir, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  rm,
+  readFile,
+  mkdir,
+  writeFile,
+  readdir,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { createServer } from "node:net";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import lockfile from "proper-lockfile";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { initHome, atomicWrite } from "../src/config.js";
-import { startDaemon } from "../src/daemon.js";
-import { MemoryClient } from "../src/client.js";
-import { createMcp } from "../src/mcp.js";
-import { runHook, spoolEvents } from "../src/adapters/hooks.js";
-import { EventSchema, type Memory } from "../src/contracts.js";
+import { initHome, atomicWrite } from "../../src/config.js";
+import { startDaemon } from "../../src/daemon.js";
+import { MemoryClient } from "../../src/client.js";
+import { createMcp } from "../../src/mcp.js";
+import { runHook, spoolEvents } from "../../src/adapters/hooks.js";
+import { EventSchema, type Memory } from "../../src/contracts.js";
 
 let home: string;
 let daemon: Awaited<ReturnType<typeof startDaemon>>;
@@ -33,8 +42,11 @@ beforeEach(async () => {
   client = new MemoryClient(home);
 });
 afterEach(async () => {
-  await daemon.close();
-  await rm(home, { recursive: true, force: true });
+  try {
+    if (daemon?.server.listening) await daemon.close();
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
 });
 test("真实 HTTP 鉴权、跨站拒绝、记忆 CRUD 和版本冲突", async () => {
   expect((await fetch(`http://127.0.0.1:${port}/v1/status`)).status).toBe(401);
@@ -337,4 +349,154 @@ test("服务停机时已采集内容仍可耐久保存，重启后消费", async
   expect(daemon.store.events(daemon.store.jobs()[0].id)[0].content).toBe(
     "离线时的新偏好",
   );
+});
+
+test("监听失败会释放数据目录写锁", async () => {
+  const blockedHome = join(home, "blocked");
+  const config = await initHome(blockedHome);
+  await atomicWrite(
+    join(blockedHome, "config.json"),
+    JSON.stringify({ ...config, port }),
+  );
+  await expect(
+    startDaemon(blockedHome, { quiet: true, worker: false }),
+  ).rejects.toMatchObject({ code: "EADDRINUSE" });
+  expect(await lockfile.check(blockedHome)).toBe(false);
+  expect(await client.request("/status")).toBeTruthy();
+});
+
+test("CLI 启动的真实 MCP stdio 进程可以搜索已保存的记忆", async () => {
+  const memory = await client.request<Memory>("/memories", {
+    method: "POST",
+    body: {
+      title: "stdio 验收",
+      content: "使用 Rust 编写工具",
+      scope: "global",
+    },
+  });
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [
+      "--import",
+      "tsx",
+      resolve("src/cli.ts"),
+      "--home",
+      home,
+      "mcp",
+      "--agent",
+      "pi",
+    ],
+    stderr: "pipe",
+  });
+  const mcp = new Client({ name: "stdio-test", version: "1" });
+  try {
+    await mcp.connect(transport, { timeout: 5_000 });
+    expect((await mcp.listTools({}, { timeout: 5_000 })).tools).toHaveLength(5);
+    const found = await mcp.callTool(
+      { name: "memory_search", arguments: { query: "Rust" } },
+      undefined,
+      { timeout: 5_000 },
+    );
+    expect(found.isError).not.toBe(true);
+    const [{ text }] = found.content as { text: string }[];
+    expect(JSON.parse(text)).toMatchObject({
+      total: 1,
+      results: [{ id: memory.id, excerpt: memory.content }],
+    });
+  } finally {
+    await transport.close();
+  }
+});
+
+test("CLI 导入预览、批准、纠正、撤回和导出走真实后端", async () => {
+  const path = join(home, "source.md");
+  const target = join(home, "exported");
+  await writeFile(path, "偏好使用 Kotlin");
+  const cli = async (...args: string[]) => {
+    const { stdout } = await promisify(execFile)(process.execPath, [
+      "--import",
+      "tsx",
+      resolve("src/cli.ts"),
+      "--home",
+      home,
+      ...args,
+    ]);
+    return JSON.parse(stdout);
+  };
+
+  expect(await cli("import", path, "--dry-run")).toMatchObject([
+    { path, preview: "偏好使用 Kotlin" },
+  ]);
+  expect(await daemon.store.list()).toEqual([]);
+  const [memory] = (await cli("import", path)) as Memory[];
+  expect(memory).toMatchObject({ status: "candidate", revision: 1 });
+  expect(await cli("memory", "approve", memory.id)).toMatchObject({
+    status: "active",
+    revision: 2,
+  });
+  expect(
+    await cli("memory", "correct", memory.id, "偏好使用 Swift"),
+  ).toMatchObject({
+    content: "偏好使用 Swift",
+    status: "active",
+    revision: 3,
+  });
+  expect(await cli("memory", "forget", memory.id)).toMatchObject({
+    status: "withdrawn",
+    revision: 4,
+  });
+  expect(await daemon.store.get(memory.id)).toMatchObject({
+    status: "withdrawn",
+    content: "偏好使用 Swift",
+  });
+
+  const root = join(home, "project-root");
+  await mkdir(root);
+  await daemon.store.addProject(root);
+  expect(await cli("export", target)).toMatchObject({ directory: target });
+  expect((await readdir(target)).sort()).toEqual([
+    "history",
+    "memories",
+    "projects.json",
+  ]);
+  expect(
+    await readFile(join(target, "memories", `${memory.id}.md`), "utf8"),
+  ).toBe(await readFile(memory.file, "utf8"));
+  expect(await readdir(join(target, "history", memory.id))).toHaveLength(3);
+  expect(await readFile(join(target, "projects.json"), "utf8")).toBe(
+    await readFile(join(home, "projects.json"), "utf8"),
+  );
+});
+
+test("服务离线时 CLI hook 返回空上下文，保留本轮用户证据", async () => {
+  await daemon.close();
+  const run = promisify(execFile)(process.execPath, [
+    "--import",
+    "tsx",
+    resolve("src/cli.ts"),
+    "--home",
+    home,
+    "hook",
+    "--agent",
+    "zcode",
+  ]);
+  run.child.stdin?.end(
+    JSON.stringify({
+      session_id: "offline-hook",
+      hook_event_name: "UserPromptSubmit",
+      turn_id: "t1",
+      prompt: "离线期间的新偏好",
+    }),
+  );
+  const { stdout, stderr } = await run;
+  expect(JSON.parse(stdout)).toEqual({});
+  expect(stderr).toContain("[user-memory]");
+  const directory = join(home, "spool");
+  const files = await readdir(directory);
+  expect(files).toHaveLength(1);
+  expect(
+    JSON.parse(await readFile(join(directory, files[0]), "utf8")),
+  ).toMatchObject([
+    { sessionId: "offline-hook", role: "user", content: "离线期间的新偏好" },
+  ]);
 });

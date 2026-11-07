@@ -337,10 +337,14 @@ recall(session, project, query):
 
 ```sh
 pnpm typecheck
+pnpm test:backend
+pnpm test:integration
 pnpm test
 pnpm test:hermes
 pnpm test:web
 ```
+
+`pnpm test:backend` 在临时目录测试 Markdown、SQLite 和后端接口，包括 Hermes 的 Python 用例，无需启动服务。只改记忆模块时可运行 `pnpm exec vitest run tests/backend/memory/`。`pnpm test:integration` 验证本机 HTTP、真实 MCP stdio 和 CLI 子进程。`pnpm test` 运行全部 TypeScript 用例。PR 会自动执行类型检查、完整 TypeScript 测试和 Hermes 测试。
 
 网页测试默认在 macOS 使用安装好的 Chrome。其他环境先执行 `pnpm exec playwright install chromium`，或通过 `UMEM_BROWSER_CHANNEL` 选择安装的浏览器。测试数据均在临时目录，截图放在 `.test-output/`。
 
@@ -366,7 +370,7 @@ src/
 ├── integrations/   # 安装/撤销、原生记忆导入
 └── web/            # React 管理页
 adapters/hermes/    # Python stdlib provider，宿主要求 Python
-tests/             # 核心、HTTP/MCP、安装和适配器契约测试
+tests/             # backend 快测、integration 集成测试及 Hermes/网页单元测试
 scripts/           # 浏览器与真实 stdio 验收
 docs/              # 验收记录
 ```

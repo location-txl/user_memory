@@ -23,6 +23,18 @@
 
 网页测试图片：运行后位于 `.test-output/memory-desktop.png`、`.test-output/connections-desktop.png`、`.test-output/memory-mobile.png`。这些图片使用测试记录，不是用户真实记忆。
 
+## 日常回归与 PR 检查
+
+| 命令                                         | 验证范围                                                                                                                      |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm test:backend`                          | 记忆与队列规则、Hono 进程内请求、MCP 内存传输、配置与宿主契约、模拟 launchctl、Hermes provider。使用临时 Markdown 和 SQLite。 |
+| `pnpm exec vitest run tests/backend/memory/` | 仅运行记忆存储、召回、导入、队列和提炼用例。                                                                                  |
+| `pnpm test:integration`                      | 真实回环 HTTP、MCP stdio、CLI、端口冲突和重启恢复。                                                                           |
+| `pnpm test`                                  | 全部 TypeScript 测试，含网页国际化用例。                                                                                      |
+| `pnpm test:web`                              | 构建后用浏览器验证管理页及编译后的 MCP stdio。                                                                                |
+
+`后端回归` 工作流在每个 PR 上运行类型检查、全部 TypeScript 测试和 Hermes 测试。测试数据和宿主配置位于各用例的临时目录。真实宿主加载、模型输出和 macOS 登录启动项的验收单独进行。
+
 ## 尚未据此宣称通过的内容
 
 六种真实宿主中的加载、信任、首次授权、新会话召回，以及模型最终使用记忆的行为，不能由 fixture 或 MCP 连通测试替代。当前没有自动改写用户的宿主配置、导入真实历史数据、关闭原生记忆，或安装登录启动项。

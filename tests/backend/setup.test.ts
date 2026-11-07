@@ -7,8 +7,8 @@ import {
   applySetup,
   uninstall,
   type Host,
-} from "../src/integrations/setup.js";
-import { readOptional } from "../src/config.js";
+} from "../../src/integrations/setup.js";
+import { readOptional } from "../../src/config.js";
 let base: string;
 let home: string;
 let target: string;
@@ -71,4 +71,19 @@ test("预览之后的更改拒绝覆盖，安装之后的更改拒绝回滚", as
     "Configuration has changed",
   );
   expect(await readFile(first.path, "utf8")).toBe("用户的新修改");
+});
+
+test("已有同名 MCP 配置时规划失败并保留原文", async () => {
+  const path = join(target, ".claude.json");
+  const original = JSON.stringify({
+    mcpServers: { "user-memory": { command: "existing-command" } },
+  });
+  await writeFile(path, original);
+  await expect(planSetup(home, "claude", target)).rejects.toThrow(
+    "already exists",
+  );
+  expect(await readFile(path, "utf8")).toBe(original);
+  expect(
+    await readOptional(join(target, ".claude", "settings.json")),
+  ).toBeUndefined();
 });
