@@ -22,6 +22,7 @@ import { MemoryClient } from "../../src/client.js";
 import { createMcp } from "../../src/mcp.js";
 import { runHook, spoolEvents } from "../../src/adapters/hooks.js";
 import { EventSchema, type Memory } from "../../src/contracts.js";
+import type { McpCallsPage } from "../../src/mcp-calls.js";
 
 let home: string;
 let daemon: Awaited<ReturnType<typeof startDaemon>>;
@@ -405,7 +406,7 @@ test("监听失败会释放数据目录写锁", async () => {
   expect(await client.request("/status")).toBeTruthy();
 });
 
-test("CLI 启动的真实 MCP stdio 进程可以搜索已保存的记忆", async () => {
+test("真实 MCP stdio 调用可搜索记忆，后台离线的失败也在重启后可查", async () => {
   const memory = await client.request<Memory>("/memories", {
     method: "POST",
     body: {
@@ -443,6 +444,40 @@ test("CLI 启动的真实 MCP stdio 进程可以搜索已保存的记忆", async
       total: 1,
       results: [{ id: memory.id, excerpt: memory.content }],
     });
+    expect(
+      (await client.request<McpCallsPage>("/mcp-calls")).calls,
+    ).toMatchObject([
+      {
+        tool: "memory_search",
+        agent: "pi",
+        outcome: "success",
+        searchReturned: 1,
+      },
+    ]);
+    await daemon.close();
+    const offline = await mcp.callTool(
+      { name: "memory_search", arguments: { query: "Rust" } },
+      undefined,
+      { timeout: 5_000 },
+    );
+    expect(offline.isError).toBe(true);
+    daemon = await startDaemon(home, { quiet: true });
+    expect(
+      (await client.request<McpCallsPage>("/mcp-calls")).calls,
+    ).toMatchObject([
+      {
+        tool: "memory_search",
+        agent: "pi",
+        outcome: "tool_error",
+        responseBytes: null,
+      },
+      {
+        tool: "memory_search",
+        agent: "pi",
+        outcome: "success",
+        searchReturned: 1,
+      },
+    ]);
   } finally {
     await transport.close();
   }

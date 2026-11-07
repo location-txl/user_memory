@@ -19,6 +19,7 @@ import {
 } from "./integrations/import.js";
 import { ConfigSchema, atomicWrite, canOmitHome } from "./config.js";
 import { join } from "node:path";
+import { McpCallFilters, readMcpCalls } from "./mcp-calls.js";
 
 export function createApp(
   store: MemoryStore,
@@ -85,6 +86,20 @@ export function createApp(
     });
   });
   app.get("/v1/projects", (c) => c.json(store.projects));
+  app.get("/v1/mcp-calls", (c) => {
+    const filters = McpCallFilters.parse(c.req.query());
+    try {
+      return c.json(readMcpCalls(store.home, filters));
+    } catch {
+      return c.json(
+        errorResponse(
+          "MCP_CALL_LOG_UNAVAILABLE",
+          "MCP call log is unavailable.",
+        ),
+        503,
+      );
+    }
+  });
   app.post("/v1/context", async (c) => {
     const data = z
       .object({ cwd: z.string().optional(), projectId: Id.optional() })

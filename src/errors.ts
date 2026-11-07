@@ -14,6 +14,7 @@ export const errorMessages = {
   MEMORY_WITHDRAWN:
     "Memory has been withdrawn. Create a new record to remember it again.",
   WORKER_UNAVAILABLE: "The extraction worker is not running.",
+  MCP_CALL_LOG_UNAVAILABLE: "MCP call records could not be read.",
   IMPORT_LIMIT_EXCEEDED:
     "Import supports at most 200 files and 4 directory levels. Select a more specific directory.",
   IMPORT_FILE_TOO_LARGE: "Import file is too large. Split it first.",

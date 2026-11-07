@@ -10,6 +10,7 @@ import {
   ArrowDownToLine,
   SlidersHorizontal,
   RefreshCw,
+  Activity,
 } from "lucide-react";
 import type { Project } from "../contracts.js";
 import { api } from "./api.js";
@@ -17,6 +18,7 @@ import { storageKey } from "./i18n.js";
 import { formatError } from "./presentation.js";
 import { Library } from "./memory-library.js";
 import { Operations, type Status } from "./operations.js";
+import { McpCalls } from "./mcp-calls.js";
 import "./style.css";
 
 const token = new URLSearchParams(location.hash.slice(1)).get("token");
@@ -124,6 +126,7 @@ function App() {
           <div className="nav-label">{t("manage")}</div>
           {[
             { id: "connections", label: t("connections"), Icon: Cable },
+            { id: "mcp-calls", label: t("mcpCalls"), Icon: Activity },
             {
               id: "imports",
               label: t("importMemories"),
@@ -185,6 +188,8 @@ function App() {
             version={version}
             onChange={refresh}
           />
+        ) : page === "mcp-calls" ? (
+          <McpCalls version={version} onRefresh={refresh} />
         ) : (
           <Operations
             page={page}

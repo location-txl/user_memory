@@ -1018,3 +1018,130 @@ dialog {
     gap: 25px;
   }
 }
+
+.mcp-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 145px), 1fr));
+  gap: 12px;
+}
+.mcp-filters .field {
+  margin: 0;
+}
+.mcp-summary {
+  container-type: inline-size;
+}
+.mcp-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+.mcp-table th,
+.mcp-table td {
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--line);
+  text-align: right;
+}
+.mcp-table th:first-child {
+  padding-left: 0;
+  text-align: left;
+}
+.mcp-table th:last-child,
+.mcp-table td:last-child {
+  padding-right: 0;
+}
+.mcp-table thead {
+  color: var(--muted);
+  font-size: 12px;
+}
+.mcp-mobile-label {
+  display: none;
+}
+.mcp-search-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 145px), 1fr));
+  gap: 12px 18px;
+  margin: 18px 0 0;
+}
+.mcp-search-stats dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+.mcp-search-stats dd {
+  margin: 4px 0 0;
+  font-size: 16px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.mcp-record-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 12px;
+}
+.mcp-record-list > li {
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+.mcp-record-main,
+.mcp-record-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  font-variant-numeric: tabular-nums;
+}
+.mcp-record-meta:not(:empty) {
+  margin-top: 5px;
+  font-size: 12px;
+}
+.mcp-record-main time {
+  color: var(--muted);
+}
+.mcp-record-outcome {
+  font-size: 12px;
+  font-weight: 650;
+  color: #8e3941;
+}
+.mcp-record-outcome[data-outcome="success"] {
+  color: var(--accent);
+}
+.mcp-record-outcome[data-outcome="cancelled"] {
+  color: var(--muted);
+}
+.mcp-record-duration {
+  margin-inline-start: auto;
+  white-space: nowrap;
+}
+@container (max-width: 620px) {
+  .mcp-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    clip-path: inset(50%);
+    overflow: hidden;
+  }
+  .mcp-table,
+  .mcp-table tbody {
+    display: block;
+  }
+  .mcp-table tbody tr {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 68px), 1fr));
+    gap: 6px 8px;
+    border-bottom: 1px solid var(--line);
+    padding: 10px 0;
+  }
+  .mcp-table tbody th,
+  .mcp-table tbody td {
+    border: 0;
+    padding: 0;
+    text-align: left;
+  }
+  .mcp-table tbody th {
+    grid-column: 1 / -1;
+  }
+  .mcp-mobile-label {
+    display: block;
+    font-size: 11px;
+    color: var(--muted);
+  }
+}

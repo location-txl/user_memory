@@ -1,11 +1,16 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import type { RequestId } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { MemoryClient } from "./client.js";
+import { ClientError, MemoryClient } from "./client.js";
 import { Id, type Agent, type Memory } from "./contracts.js";
+import { errorMessages, type ErrorCode } from "./errors.js";
+import { observeMcpCalls } from "./mcp-calls.js";
 
 export function createMcp(home: string, agent: Agent = "manual") {
   const client = new MemoryClient(home);
+  const calls = observeMcpCalls(home, agent);
   const server = new McpServer(
     { name: "user-memory", version: "0.1.0" },
     {
@@ -35,12 +40,23 @@ export function createMcp(home: string, agent: Agent = "manual") {
       throw new Error("记忆不属于当前项目");
     return memory;
   }
-  const result = async (fn: () => Promise<unknown>) => {
+  const result = async (requestId: RequestId, fn: () => Promise<unknown>) => {
+    const call = calls.call(requestId);
+    if (call) call.entered = true;
     try {
+      const text = JSON.stringify(await fn());
+      if (call && typeof text === "string")
+        call.responseBytes = Buffer.byteLength(text, "utf8");
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(await fn()) }],
+        content: [{ type: "text" as const, text }],
       };
     } catch (e) {
+      if (
+        call &&
+        e instanceof ClientError &&
+        Object.hasOwn(errorMessages, e.code)
+      )
+        call.errorCode = e.code as ErrorCode;
       return {
         isError: true,
         content: [
@@ -59,13 +75,13 @@ export function createMcp(home: string, agent: Agent = "manual") {
         "搜索有效的全局与当前项目记忆，返回最多 12 条摘录；完整条件使用 memory_get 读取",
       inputSchema: { ...context, query: z.string() },
     },
-    (input) =>
-      result(async () => {
+    (input, { requestId }) =>
+      result(requestId, async () => {
         const scope = await binding(input);
         const memories = await client.request<Memory[]>(
           `/memories?${new URLSearchParams({ q: input.query, status: "active", ...(scope.projectId ? { projectId: scope.projectId } : {}) })}`,
         );
-        return {
+        const search = {
           total: memories.length,
           results: memories.slice(0, 12).map((m) => ({
             id: m.id,
@@ -76,6 +92,12 @@ export function createMcp(home: string, agent: Agent = "manual") {
             truncated: m.content.length > 1200,
           })),
         };
+        const call = calls.call(requestId);
+        if (call) {
+          call.searchTotal = search.total;
+          call.searchReturned = search.results.length;
+        }
+        return search;
       }),
   );
   server.registerTool(
@@ -84,8 +106,8 @@ export function createMcp(home: string, agent: Agent = "manual") {
       description: "读取记忆及来源，获得纠正用的 revision 和 etag",
       inputSchema: { ...context, id: Id },
     },
-    (input) =>
-      result(async () => {
+    (input, { requestId }) =>
+      result(requestId, async () => {
         const m = await scopedGet(input.id, input);
         return m.status === "withdrawn"
           ? {
@@ -111,8 +133,8 @@ export function createMcp(home: string, agent: Agent = "manual") {
           .default("preference"),
       },
     },
-    (input) =>
-      result(async () => {
+    (input, { requestId }) =>
+      result(requestId, async () => {
         const scope = await binding(input);
         if (input.scope === "project" && !scope.projectId)
           throw new Error("项目记忆需要 cwd 或已绑定的 projectId");
@@ -146,8 +168,8 @@ export function createMcp(home: string, agent: Agent = "manual") {
         content: z.string().min(1).max(16000),
       },
     },
-    (input) =>
-      result(async () => {
+    (input, { requestId }) =>
+      result(requestId, async () => {
         await scopedGet(input.id, input);
         return client.request(`/memories/${input.id}`, {
           method: "PATCH",
@@ -171,8 +193,8 @@ export function createMcp(home: string, agent: Agent = "manual") {
         etag: z.string(),
       },
     },
-    (input) =>
-      result(async () => {
+    (input, { requestId }) =>
+      result(requestId, async () => {
         await scopedGet(input.id, input);
         const m = await client.request<Memory>(`/memories/${input.id}`, {
           method: "PATCH",
@@ -185,7 +207,10 @@ export function createMcp(home: string, agent: Agent = "manual") {
         return { id: m.id, status: m.status, revision: m.revision };
       }),
   );
-  return server;
+  return {
+    connect: (transport: Transport) => server.connect(calls.wrap(transport)),
+    close: () => server.close(),
+  };
 }
 export async function runMcp(home: string, agent?: Agent) {
   await createMcp(home, agent).connect(new StdioServerTransport());

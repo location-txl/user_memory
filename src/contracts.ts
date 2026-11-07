@@ -1,15 +1,7 @@
 import { z } from "zod";
+import { agents } from "./contract-values.js";
 
-export const AgentSchema = z.enum([
-  "codex",
-  "zcode",
-  "claude",
-  "pi",
-  "deepseek",
-  "hermes",
-  "manual",
-  "import",
-]);
+export const AgentSchema = z.enum(agents);
 export type Agent = z.infer<typeof AgentSchema>;
 export const Id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 export const SourceSchema = z.object({

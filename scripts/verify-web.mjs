@@ -286,21 +286,110 @@ try {
       });
     }
   }
-  assert.deepEqual(errors, []);
+  await rm(invalidFile);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.locator(".service-state button").click();
+  await page
+    .getByText(`${invalidFile}: Missing YAML frontmatter`, {
+      exact: true,
+    })
+    .waitFor({ state: "hidden" });
   const mcp = new Client({ name: "stdio-acceptance", version: "1" });
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [resolve("dist/cli.js"), "--home", home, "mcp", "--agent", "pi"],
     stderr: "pipe",
   });
-  await mcp.connect(transport);
-  assert.equal((await mcp.listTools()).tools.length, 5);
-  const found = await mcp.callTool({
-    name: "memory_search",
-    arguments: { query: "中文" },
-  });
-  assert.ok(JSON.stringify(found).includes("网页端已纠正"));
-  await mcp.close();
+  try {
+    await mcp.connect(transport);
+    assert.equal((await mcp.listTools()).tools.length, 5);
+    const found = await mcp.callTool({
+      name: "memory_search",
+      arguments: { query: "中文" },
+    });
+    assert.ok(JSON.stringify(found).includes("网页端已纠正"));
+    const invalid = await mcp.callTool({
+      name: "memory_search",
+      arguments: { query: 42 },
+    });
+    assert.equal(invalid.isError, true);
+  } finally {
+    await mcp.close();
+  }
+  const summary = page.locator(".mcp-summary");
+  const records = page.locator(".mcp-records");
+  for (const language of ["en", "zh-CN"]) {
+    const english = language === "en";
+    await page.locator(".language-select select").selectOption(language);
+    await page
+      .getByRole("button", {
+        name: english ? "MCP calls" : "MCP 调用",
+        exact: true,
+      })
+      .click();
+    await summary.getByRole("rowheader", { name: "memory_forget" }).waitFor();
+    await summary.getByText("50%", { exact: true }).waitFor();
+    await records
+      .getByText(english ? "Input rejected" : "参数被拒", { exact: true })
+      .waitFor();
+    await records
+      .getByText(english ? /matched · .* returned/ : /命中 .* 条 · 返回 .* 条/)
+      .waitFor();
+    assert.equal(await records.getByRole("listitem").count(), 2);
+    assert.equal(await records.getByText("网页端已纠正").count(), 0);
+    for (const width of [1440, 390, 320]) {
+      await page.setViewportSize({
+        width,
+        height: width === 1440 ? 1000 : 844,
+      });
+      assert.ok(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= window.innerWidth,
+        ),
+        `${language}: MCP calls overflow at ${width}px`,
+      );
+      if (width === 1440 || width === 320) {
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await page.screenshot({
+          path: join(output, `mcp-calls-${language}-${width}.png`),
+          fullPage: true,
+        });
+      }
+      const lastRecord = records.getByRole("listitem").last();
+      await lastRecord.scrollIntoViewIfNeeded();
+      assert.ok(
+        await lastRecord.evaluate((row) => {
+          const { top, bottom } = row.getBoundingClientRect();
+          return top >= 0 && bottom <= window.innerHeight;
+        }),
+        `${language}: last MCP record is out of view at ${width}px`,
+      );
+    }
+    await page
+      .getByLabel(english ? "Record status" : "明细状态")
+      .selectOption("success");
+    await records
+      .getByText(english ? "Succeeded" : "成功", { exact: true })
+      .waitFor();
+    assert.equal(await records.getByRole("listitem").count(), 1);
+    await summary.getByText("50%", { exact: true }).waitFor();
+    await page.getByLabel(english ? /^Host/ : /^宿主/).selectOption("codex");
+    await records
+      .getByText(
+        english
+          ? "No calls match these filters."
+          : "没有符合当前筛选条件的调用。",
+        { exact: true },
+      )
+      .waitFor();
+    await page
+      .getByRole("button", {
+        name: english ? "Global memories" : "全局记忆",
+        exact: true,
+      })
+      .click();
+  }
+  assert.deepEqual(errors, []);
   console.log(
     JSON.stringify(
       {
@@ -314,6 +403,7 @@ try {
           "Persistent English and Chinese UI selection",
           "No horizontal overflow on mobile",
           "Real MCP stdio process",
+          "MCP tool summary and call records with host and status filters",
         ],
         screenshots: output,
       },
