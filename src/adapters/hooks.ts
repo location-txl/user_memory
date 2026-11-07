@@ -65,7 +65,8 @@ export function transcriptEvent(
   const toolOutput = z
     .object({ type: z.literal("function_call_output"), output: z.string() })
     .safeParse(row.payload);
-  if (agent === "codex" && toolOutput.success)
+  if (agent === "codex" && toolOutput.success) {
+    if (toolOutput.data.output === "") return;
     return {
       id: `${agent}:${sessionId}:${fingerprint(`${offset}:${line}`).slice(0, 24)}`,
       agent,
@@ -77,6 +78,7 @@ export function transcriptEvent(
       injected: false,
       worker: false,
     };
+  }
   const value =
     agent === "codex"
       ? row.type === "response_item"

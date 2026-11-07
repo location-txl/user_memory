@@ -332,6 +332,47 @@ test("Codex 增量采集不导入旧历史，不丢跨缓冲区 UTF-8 或半行"
   expect(events[0].content).not.toContain("�");
   expect(events[1].content).toBe("最后一条新回复");
 });
+test("Codex 空工具输出不阻塞同批有效事件入库", async () => {
+  const path = join(home, "transcript.jsonl");
+  const stop = () =>
+    runHook(home, "codex", {
+      session_id: "c1",
+      hook_event_name: "Stop",
+      transcript_path: path,
+    });
+  await writeFile(path, "");
+  await stop();
+  const rows = [
+    { type: "function_call_output", output: "" },
+    { type: "function_call_output", output: "有效工具输出" },
+    {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "正常回复" }],
+    },
+  ];
+  await writeFile(
+    path,
+    rows
+      .map((payload) =>
+        JSON.stringify({
+          type: "response_item",
+          timestamp: "2026-11-07T00:00:00.000Z",
+          payload,
+        }),
+      )
+      .join("\n") + "\n",
+  );
+  await stop();
+  await daemon.store.drainSpool();
+  expect(await readdir(join(home, "spool"))).toEqual([]);
+  const jobs = daemon.store.jobs();
+  expect(jobs).toHaveLength(1);
+  expect(daemon.store.events(jobs[0].id).map(({ content }) => content)).toEqual([
+    "有效工具输出",
+    "正常回复",
+  ]);
+});
 test("服务停机时已采集内容仍可耐久保存，重启后消费", async () => {
   await daemon.close();
   await spoolEvents(home, [
