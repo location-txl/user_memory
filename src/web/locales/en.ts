@@ -5,7 +5,7 @@ const errors = {
   error_LOCAL_ONLY: "Only local access is allowed.",
   error_CROSS_ORIGIN_FORBIDDEN: "Cross-origin requests are not allowed.",
   error_UNAUTHORIZED:
-    "Open the page with umem web, using the same --home or UMEM_HOME as the service.",
+    "Open the page with umem web. For a custom data directory, use the same --home or UMEM_HOME as the service.",
   error_PAYLOAD_TOO_LARGE: "Request body is too large.",
   error_PROJECT_NOT_FOUND: "Project does not exist.",
   error_PROJECT_ALREADY_BOUND: "Directory is already bound to another project.",

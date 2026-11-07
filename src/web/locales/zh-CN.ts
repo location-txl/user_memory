@@ -5,7 +5,7 @@ export default {
   error_LOCAL_ONLY: "仅允许本机访问。",
   error_CROSS_ORIGIN_FORBIDDEN: "不允许跨站请求。",
   error_UNAUTHORIZED:
-    "请通过 umem web 打开页面，并使用与服务一致的 --home 或 UMEM_HOME。",
+    "请通过 umem web 打开页面。如果服务使用自定义数据目录，请使用相同的 --home 或 UMEM_HOME。",
   error_PAYLOAD_TOO_LARGE: "请求内容过大。",
   error_PROJECT_NOT_FOUND: "项目不存在。",
   error_PROJECT_ALREADY_BOUND: "目录已绑定到另一个项目。",

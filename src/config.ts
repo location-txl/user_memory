@@ -20,10 +20,14 @@ export const ConfigSchema = z.object({
   workerTimeoutSeconds: z.number().int().min(1).default(180),
 });
 export type Config = z.infer<typeof ConfigSchema>;
+const defaultMemoryHome = () => join(homedir(), ".user-memory");
+
 export function memoryHome(value?: string) {
-  return resolve(
-    value ?? process.env.UMEM_HOME ?? join(homedir(), ".user-memory"),
-  );
+  return resolve(value ?? process.env.UMEM_HOME ?? defaultMemoryHome());
+}
+
+export function canOmitHome(home: string) {
+  return home === defaultMemoryHome() && home === memoryHome();
 }
 export async function atomicWrite(path: string, content: string) {
   const tmp = `${path}.${randomUUID()}.tmp`;

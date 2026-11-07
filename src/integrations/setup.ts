@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { mkdir, readFile, unlink } from "node:fs/promises";
 import { z } from "zod";
 import { stringify } from "yaml";
-import { atomicWrite, initHome, readOptional } from "../config.js";
+import { atomicWrite, canOmitHome, initHome, readOptional } from "../config.js";
 import { cliCommand, shellQuote } from "../cli-command.js";
 import { fingerprint } from "../memory/files.js";
 
@@ -45,7 +45,7 @@ export async function planSetup(
     host,
     changes: [],
     instructions: [
-      `Restart the host or reload the extension, then run ${cliCommand(home)} doctor to inspect capture and recall timestamps. Native memory is unchanged; switch only after migration verification.`,
+      `Restart the host or reload the extension, then run ${cliCommand(home, canOmitHome(home))} doctor to inspect capture and recall timestamps. Native memory is unchanged; switch only after migration verification.`,
     ],
   };
   const cli = join(root, "dist", "cli.js");

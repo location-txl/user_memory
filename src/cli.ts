@@ -23,7 +23,10 @@ const program = new Command()
   .name("umem")
   .description("Local cross-agent shared memory")
   .version("0.1.0")
-  .option("--home <path>", "Shared memory data directory");
+  .option(
+    "--home <path>",
+    "Shared memory data directory (default: UMEM_HOME or ~/.user-memory)",
+  );
 const home = () => memoryHome(program.opts().home);
 const client = () => new MemoryClient(home());
 const print = (value: unknown) =>

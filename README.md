@@ -52,7 +52,7 @@ umem doctor
 
 服务默认监听 `127.0.0.1:43123`。`web` 用 URL fragment 传递本机访问密钥，页面读取后立即移除 fragment，密钥只留在当前标签页的 sessionStorage。直接打开裸 URL 不会自动获得访问权限。
 
-自定义数据目录时，所有命令保持相同的 `--home`，或设置 `UMEM_HOME`：
+CLI 按 `--home`、`UMEM_HOME`、`~/.user-memory` 的顺序选择数据目录。使用默认目录时直接运行 `umem` 命令即可。自定义目录时，在执行命令的终端设置 `UMEM_HOME`，或在命令中显式指定目录：
 
 ```sh
 umem --home /绝对路径/公共记忆 init
@@ -99,7 +99,7 @@ umem setup codex            # 备份并写入 hooks 和 MCP 配置
 
 配置中使用当前 Node 和已安装 CLI 的绝对路径，不依赖 Codex 启动时能否从 PATH 找到 `umem`。这一步不导入旧会话，也不关闭 Codex 自带的记忆。
 
-使用自定义公共记忆目录时，接入也必须带相同的 `--home`：
+使用自定义公共记忆目录时，接入命令也需要指向同一目录。可以沿用 `UMEM_HOME`，或显式指定目录：
 
 ```sh
 umem --home /绝对路径/公共记忆 setup codex

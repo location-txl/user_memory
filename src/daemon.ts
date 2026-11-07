@@ -4,7 +4,7 @@ import lockfile from "proper-lockfile";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFile } from "node:fs/promises";
-import { initHome } from "./config.js";
+import { canOmitHome, initHome } from "./config.js";
 import { cliCommand } from "./cli-command.js";
 import { MemoryStore } from "./memory/store.js";
 import { MemoryWorker } from "./memory/worker.js";
@@ -51,7 +51,7 @@ export async function startDaemon(
   worker.start();
   if (!options.quiet)
     console.log(
-      `Shared memory started: http://127.0.0.1:${config.port}\nData directory: ${home}\nRun this command in another terminal to open the management page:\n${cliCommand(home)} web`,
+      `Shared memory started: http://127.0.0.1:${config.port}\nData directory: ${home}\nRun this command in another terminal to open the management page:\n${cliCommand(home, canOmitHome(home))} web`,
     );
   const close = async () => {
     await worker.stop();

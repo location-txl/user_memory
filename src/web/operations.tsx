@@ -10,6 +10,7 @@ import { formatDate, formatError } from "./presentation.js";
 
 export type Status = {
   home: string;
+  canOmitHome?: boolean;
   active: number;
   candidates: number;
   errors: string[];
@@ -99,7 +100,9 @@ export function Operations({
                   <b>{formatDate(receipt?.recalled_at, i18n)}</b>
                 </span>
               </div>
-              <Command value={`${cliCommand(status?.home)} setup ${h.id}`} />
+              <Command
+                value={`${cliCommand(status?.home, status?.canOmitHome)} setup ${h.id}`}
+              />
             </article>
           );
         })}
@@ -403,7 +406,7 @@ function Settings({ status, onChange }: { status?: Status; onChange(): void }) {
         <p className="file-path">{status?.home ?? t("loading")}</p>
         <p className="muted">{t("storageDescription")}</p>
         <Command
-          value={`${cliCommand(status?.home)} export /absolute/path/memory-backup`}
+          value={`${cliCommand(status?.home, status?.canOmitHome)} export /absolute/path/memory-backup`}
         />
       </section>
       <section className="jobs">

@@ -17,7 +17,7 @@ import {
   nativeLocations,
   previewImport,
 } from "./integrations/import.js";
-import { ConfigSchema, atomicWrite } from "./config.js";
+import { ConfigSchema, atomicWrite, canOmitHome } from "./config.js";
 import { join } from "node:path";
 
 export function createApp(
@@ -80,6 +80,7 @@ export function createApp(
     return c.json({
       ...store.status(),
       home: store.home,
+      canOmitHome: canOmitHome(store.home),
       workerEnabled: worker?.config.extractionEnabled ?? false,
     });
   });
