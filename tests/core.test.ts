@@ -145,6 +145,54 @@ describe("范围、召回与撤回", () => {
     expect(withdrawn.context).not.toContain("粤语");
     expect((await recall(store, request)).changes).toEqual([]);
   });
+  test("保留存量记忆的脱敏标记，达到标题上限时仍可撤回", async () => {
+    const prefix = "x".repeat(143) + " password=";
+    const title = prefix + "[已隐去凭据]";
+    const saved = await store.create(input());
+    const raw = await readFile(saved.file, "utf8");
+    await writeFile(saved.file, raw.replace(saved.title, title));
+
+    const existing = await store.get(saved.id);
+    expect(existing.title).toHaveLength(160);
+    const withdrawn = await store.revise(
+      existing.id,
+      existing.revision,
+      { status: "withdrawn" },
+      existing.etag,
+    );
+    expect(withdrawn.status).toBe("withdrawn");
+    expect(withdrawn.title).toBe(title);
+    expect((await store.history(existing.id))[0].title).toBe(title);
+    const created = await store.create({
+      ...input("另一条记忆"),
+      title: prefix + "example",
+    });
+    expect(created.title).toBe(title);
+  });
+  test("四条在原有预算内的记忆更新会一并附上新版正文", async () => {
+    const request = RecallSchema.parse({ sessionId: "budget" });
+    const records = [];
+    for (let i = 0; i < 4; i++) {
+      records.push(await store.create(input(`旧偏好 ${i}`)));
+    }
+    expect((await recall(store, request)).memories).toHaveLength(4);
+    for (const [i, record] of records.entries()) {
+      await store.revise(
+        record.id,
+        record.revision,
+        { content: `${i}${"x".repeat(1434)}` },
+        record.etag,
+      );
+    }
+    const updated = await recall(store, request);
+    expect(updated.memories).toHaveLength(4);
+    for (const record of records) {
+      expect(updated.context).toContain(`【${record.id} r2，全局】`);
+      expect(updated.changes).toContain(
+        `记忆 ${record.id} 已更新，以下新版本替代此前版本。`,
+      );
+    }
+  });
   test("项目目录别名对应同一份记忆", async () => {
     await mkdir(join(home, "one"));
     await mkdir(join(home, "two"));

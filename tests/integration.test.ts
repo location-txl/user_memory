@@ -3,6 +3,8 @@ import { mkdtemp, rm, readFile, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { initHome, atomicWrite } from "../src/config.js";
@@ -60,8 +62,127 @@ test("真实 HTTP 鉴权、跨站拒绝、记忆 CRUD 和版本冲突", async ()
       method: "PATCH",
       body: { revision: m.revision, etag: m.etag, content: "旧版本修改" },
     }),
-  ).rejects.toThrow("已改变");
+  ).rejects.toMatchObject({ code: "MEMORY_CONFLICT", status: 409 });
 });
+test("API errors expose stable codes and structured validation details", async () => {
+  const unauthorized = await fetch(`http://127.0.0.1:${port}/v1/status`);
+  expect(await unauthorized.json()).toMatchObject({
+    code: "UNAUTHORIZED",
+    error: expect.stringContaining("umem web"),
+  });
+  await expect(
+    client.request("/memories", {
+      method: "POST",
+      body: { title: "", content: "保留用户原文", scope: "global" },
+    }),
+  ).rejects.toMatchObject({
+    code: "VALIDATION_ERROR",
+    status: 400,
+    message: expect.stringMatching(/title: .*>=1/),
+    details: {
+      issues: [
+        expect.objectContaining({
+          path: ["title"],
+          code: "too_small",
+          minimum: 1,
+        }),
+      ],
+    },
+  });
+  await expect(
+    client.request("/memories", {
+      method: "POST",
+      body: { title: "原文", content: "原文", scope: "project" },
+    }),
+  ).rejects.toMatchObject({
+    code: "VALIDATION_ERROR",
+    details: {
+      issues: [
+        expect.objectContaining({
+          code: "custom",
+          params: { rule: "scope_project_mismatch" },
+        }),
+      ],
+    },
+  });
+  await expect(client.request("/memories/missing")).rejects.toMatchObject({
+    code: "MEMORY_NOT_FOUND",
+    status: 404,
+  });
+  const missingPath = join(home, "missing.md");
+  await expect(
+    client.request("/imports/preview", {
+      method: "POST",
+      body: { path: missingPath },
+    }),
+  ).rejects.toMatchObject({
+    code: "INTERNAL_ERROR",
+    message: expect.stringContaining(`lstat '${missingPath}'`),
+  });
+  const token = (await readFile(join(home, "token"), "utf8")).trim();
+  const malformed = await fetch(`http://127.0.0.1:${port}/v1/memories`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: "{",
+  });
+  expect(malformed.status).toBe(500);
+  expect(await malformed.json()).toMatchObject({ code: "INTERNAL_ERROR" });
+});
+test("doctor displays API diagnostics as provided", async () => {
+  const file = join(home, "memories", "中文文件.md");
+  await writeFile(file, "Missing frontmatter fixture");
+  await atomicWrite(
+    join(home, "config.json"),
+    JSON.stringify({ ...daemon.worker.config, codexPath: process.execPath }),
+  );
+  const historicalError = "Codex 提炼失败（1）：外部诊断";
+  daemon.store.db
+    .prepare(
+      "INSERT INTO jobs (agent, session_id, state, error, updated_at) VALUES ('codex', 'historical', 'failed', ?, ?)",
+    )
+    .run(historicalError, new Date().toISOString());
+  const status = await client.request("/status");
+  expect(status).toMatchObject({
+    errors: [`${file}: Missing YAML frontmatter`],
+    jobs: [{ error: historicalError }],
+  });
+  const { stdout } = await promisify(execFile)(process.execPath, [
+    "--import",
+    "tsx",
+    "src/cli.ts",
+    "--home",
+    home,
+    "doctor",
+  ]);
+  expect(JSON.parse(stdout).status).toEqual(status);
+});
+test.skipIf(process.platform === "win32")(
+  "CLI 导入错误转义路径中的终端控制字符",
+  async () => {
+    const directory = join(home, "downloaded");
+    const child = join(directory, "subdir\u001b[2J\u009bH");
+    await mkdir(child, { recursive: true });
+    await writeFile(join(child, "big.md"), "a".repeat(128001));
+    await expect(
+      promisify(execFile)(process.execPath, [
+        "--import",
+        "tsx",
+        "src/cli.ts",
+        "--home",
+        home,
+        "import",
+        directory,
+        "--dry-run",
+      ]),
+    ).rejects.toMatchObject({
+      code: 1,
+      stderr: `Import file is too large. Split it first.\n${join(directory, "subdir\\u001b[2J\\u009bH", "big.md")}\n`,
+    });
+  },
+);
 test("同一数据目录拒绝第二个写入服务", async () => {
   await expect(startDaemon(home, { quiet: true })).rejects.toThrow(/lock/i);
   expect(await client.request("/status")).toBeTruthy();

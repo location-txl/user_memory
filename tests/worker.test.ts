@@ -70,7 +70,9 @@ test("助手独自声称的偏好只进入候选；伪造证据让任务失败",
     proposals: [proposal({ sourceIds: ["does-not-exist"] })],
   })).tick(true);
   expect(store.jobs()[0].state).toBe("failed");
-  expect(store.jobs()[0].error).toContain("不存在的证据");
+  expect(store.jobs()[0].error).toBe(
+    "Extraction output references evidence that does not exist.",
+  );
 });
 test("模型失败保留证据可重试，撤回后同源重放不复活", async () => {
   store.ingest([event()]);

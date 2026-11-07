@@ -111,7 +111,7 @@ export async function runHook(home: string, agent: Agent, raw: unknown) {
   if (process.env.UMEM_WORKER === "1") return {};
   const input = HookInput.parse(raw);
   const sessionId = input.session_id ?? input.sessionId;
-  if (!sessionId) throw new Error("hook 缺少 session_id");
+  if (!sessionId) throw new Error("Hook is missing session_id");
   await initHome(home);
   const client = new MemoryClient(home, 1200);
   const cursorPath = join(

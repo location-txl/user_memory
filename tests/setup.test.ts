@@ -63,10 +63,12 @@ test("预览之后的更改拒绝覆盖，安装之后的更改拒绝回滚", as
   const first = plan.changes[0];
   await mkdir(join(target, ".pi", "agent", "extensions"), { recursive: true });
   await writeFile(first.path, "另一个编辑器的内容");
-  await expect(applySetup(home, plan)).rejects.toThrow("文件已改变");
+  await expect(applySetup(home, plan)).rejects.toThrow("File has changed");
   await rm(first.path);
   await applySetup(home, await planSetup(home, "pi", target));
   await writeFile(first.path, "用户的新修改");
-  await expect(uninstall(home, "pi", true)).rejects.toThrow("已有其他修改");
+  await expect(uninstall(home, "pi", true)).rejects.toThrow(
+    "Configuration has changed",
+  );
   expect(await readFile(first.path, "utf8")).toBe("用户的新修改");
 });

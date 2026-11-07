@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useEffect, useRef, useState } from "react";
 import {
   Search,
@@ -9,7 +10,30 @@ import {
   X,
 } from "lucide-react";
 import type { Memory, Project } from "../contracts.js";
-import { api, date, kindNames, statusNames } from "./api.js";
+import { api } from "./api.js";
+import type en from "./locales/en.js";
+import { formatDate, formatError } from "./presentation.js";
+
+const kindKeys = {
+  preference: "preference",
+  constraint: "constraint",
+  decision: "decision",
+  lesson: "lesson",
+} as const satisfies Record<Memory["kind"], keyof typeof en>;
+const statusKeys = {
+  active: "active",
+  candidate: "reviewQueue",
+  withdrawn: "withdrawn",
+} as const satisfies Record<Memory["status"], keyof typeof en>;
+const roleKeys: Partial<Record<string, keyof typeof en>> = {
+  user: "sourceRoleUser",
+  assistant: "sourceRoleAssistant",
+  system: "sourceRoleSystem",
+  tool: "sourceRoleTool",
+  developer: "sourceRoleDeveloper",
+  manual: "sourceRoleManual",
+  import: "sourceRoleImport",
+};
 
 type Props = {
   scope: string;
@@ -25,11 +49,12 @@ export function Library({
   version,
   onChange,
 }: Props) {
+  const { t, i18n } = useTranslation();
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState(candidates ? "candidate" : "active");
   const [items, setItems] = useState<Memory[]>([]);
   const [selected, setSelected] = useState<string>();
-  const [error, setError] = useState("");
+  const [error, setError] = useState<unknown>(null);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const current = items.find((m) => m.id === selected);
@@ -60,7 +85,7 @@ export function Library({
               }
             },
             (e) => {
-              if (live) setError(e.message);
+              if (live) setError(e);
             },
           )
           .finally(() => {
@@ -78,51 +103,57 @@ export function Library({
     <>
       <header className="page-header">
         <div>
-          <h1>{candidates ? "待审核" : (project?.name ?? "全局记忆")}</h1>
+          <h1>
+            {candidates
+              ? t("reviewQueue")
+              : (project?.name ?? t("globalMemories"))}
+          </h1>
           <p>
             {candidates
-              ? "证据尚不充分，确认后才会出现在召回中。"
+              ? t("reviewQueueDescription")
               : project
-                ? "仅在这个项目及其关联目录中使用。"
-                : "跨项目共享的偏好与约定，所有接入工具都能读取。"}
+                ? t("projectMemoriesDescription")
+                : t("globalMemoriesDescription")}
           </p>
         </div>
         <button className="primary" onClick={() => setCreating(true)}>
           <Plus size={17} />
-          记一条
+          {t("addMemory")}
         </button>
       </header>
       <div className="library-toolbar">
         <label className="search">
           <Search size={18} />
           <input
-            aria-label="搜索记忆"
-            placeholder="搜索内容、标题…"
+            aria-label={t("searchMemories")}
+            placeholder={t("searchMemoriesPlaceholder")}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
         </label>
         {!candidates && (
           <select
-            aria-label="记忆状态"
+            aria-label={t("memoryStatus")}
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
           >
-            <option value="active">生效中</option>
-            <option value="withdrawn">已撤回</option>
+            <option value="active">{t("activeFilter")}</option>
+            <option value="withdrawn">{t("withdrawn")}</option>
           </select>
         )}
-        <span className="muted">{items.length} 条记忆</span>
+        <span className="muted">
+          {t("memoryCount", { count: items.length })}
+        </span>
       </div>
-      {error && (
+      {!!error && (
         <p className="alert" role="alert">
-          {error}
+          {formatError(error, t)}
         </p>
       )}
       <div className="library-grid">
-        <section className="memory-list" aria-label="记忆列表">
+        <section className="memory-list" aria-label={t("memoryList")}>
           {loading ? (
-            <p className="empty">正在读取记忆…</p>
+            <p className="empty">{t("loadingMemories")}</p>
           ) : items.length ? (
             items.map((m) => (
               <button
@@ -131,16 +162,18 @@ export function Library({
                 onClick={() => setSelected(m.id)}
               >
                 <div className="row-meta">
-                  <span className={`kind ${m.kind}`}>{kindNames[m.kind]}</span>
-                  <time>{date(m.updatedAt)}</time>
+                  <span className={`kind ${m.kind}`}>
+                    {t(kindKeys[m.kind])}
+                  </span>
+                  <time>{formatDate(m.updatedAt, i18n)}</time>
                 </div>
                 <h2>{m.title}</h2>
                 <p>{m.content}</p>
                 <span className="row-source">
                   {[...new Set(m.sources.map((s) => s.agent))].join(" / ") ||
-                    "手动保存"}
+                    t("savedManually")}
                   {scope === "all" &&
-                    ` · ${m.scope === "global" ? "全局" : (projects.find((p) => p.id === m.projectId)?.name ?? "项目")}`}
+                    ` · ${m.scope === "global" ? t("global") : (projects.find((p) => p.id === m.projectId)?.name ?? t("projects"))}`}
                 </span>
               </button>
             ))
@@ -149,27 +182,27 @@ export function Library({
               <FileText size={32} />
               <h2>
                 {query
-                  ? "没有匹配的记忆"
+                  ? t("noMatchingMemories")
                   : candidates
-                    ? "没有待审核记录"
-                    : "给下一次对话留一点线索"}
+                    ? t("emptyReviewQueue")
+                    : t("emptyLibraryTitle")}
               </h2>
               <p>
                 {query
-                  ? "试试更短的关键词。"
+                  ? t("shorterSearchHint")
                   : candidates
-                    ? "自动提炼中不确定的内容会出现在这里。"
-                    : "可以手动记下一条长期偏好，或接入常用工具。"}
+                    ? t("emptyReviewQueueDescription")
+                    : t("emptyLibraryDescription")}
               </p>
               {!query && !candidates && (
                 <button onClick={() => setCreating(true)}>
-                  添加第一条记忆
+                  {t("addFirstMemory")}
                 </button>
               )}
             </div>
           )}
         </section>
-        <section className="detail-pane" aria-label="记忆详情">
+        <section className="detail-pane" aria-label={t("memoryDetails")}>
           {current ? (
             <MemoryDetail
               key={`${current.id}:${current.etag}`}
@@ -179,11 +212,7 @@ export function Library({
           ) : (
             <div className="detail-placeholder">
               <BookMark />
-              <p>
-                记忆的原文、来源和修订
-                <br />
-                会显示在这里。
-              </p>
+              <p>{t("memoryDetailsPlaceholder")}</p>
             </div>
           )}
         </section>
@@ -211,10 +240,11 @@ function MemoryDetail({
   memory: Memory;
   onChange(): void;
 }) {
+  const { t, i18n } = useTranslation();
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(m.title);
   const [content, setContent] = useState(m.content);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
   const [history, setHistory] = useState<Memory[]>();
   const [confirm, setConfirm] = useState(false);
@@ -228,7 +258,7 @@ function MemoryDetail({
       });
       onChange();
     } catch (e) {
-      setError((e as Error).message);
+      setError(e);
     } finally {
       setBusy(false);
     }
@@ -237,13 +267,14 @@ function MemoryDetail({
     <>
       <div className="detail-label">
         <span>
-          {statusNames[m.status]} · 第 {m.revision} 版
+          {t(statusKeys[m.status])} ·{" "}
+          {t("revisionNumber", { revision: m.revision })}
         </span>
         <FileText size={17} />
       </div>
       {editing ? (
         <label className="field">
-          标题
+          {t("title")}
           <input
             value={title}
             maxLength={160}
@@ -253,15 +284,15 @@ function MemoryDetail({
       ) : (
         <h2 className="detail-title">{m.title}</h2>
       )}
-      {error && (
+      {!!error && (
         <div className="alert" role="alert">
-          {error}
-          <button onClick={onChange}>重新读取</button>
+          {formatError(error, t)}
+          <button onClick={onChange}>{t("reload")}</button>
         </div>
       )}
       {editing ? (
         <label className="field">
-          内容
+          {t("content")}
           <textarea
             rows={9}
             value={content}
@@ -283,7 +314,7 @@ function MemoryDetail({
                 onClick={() => void update({ title, content })}
               >
                 <Check size={16} />
-                保存修改
+                {t("saveChanges")}
               </button>
               <button
                 onClick={() => {
@@ -292,14 +323,14 @@ function MemoryDetail({
                   setContent(m.content);
                 }}
               >
-                取消
+                {t("cancel")}
               </button>
             </>
           ) : (
             <>
               <button onClick={() => setEditing(true)}>
                 <Pencil size={15} />
-                编辑
+                {t("edit")}
               </button>
               {m.status === "candidate" && (
                 <button
@@ -308,12 +339,12 @@ function MemoryDetail({
                   onClick={() => void update({ status: "active" })}
                 >
                   <Check size={16} />
-                  确认记住
+                  {t("approveMemory")}
                 </button>
               )}
               <button className="quiet" onClick={() => setConfirm(true)}>
                 <Archive size={15} />
-                {m.status === "candidate" ? "不保留" : "撤回"}
+                {m.status === "candidate" ? t("discard") : t("withdraw")}
               </button>
             </>
           )}
@@ -321,36 +352,40 @@ function MemoryDetail({
       )}
       {confirm && (
         <div className="confirm">
-          <p>
-            撤回后不再注入新对话，下一次召回会提示现有会话忽略旧内容。修订历史仍保留。
-          </p>
+          <p>{t("withdrawalExplanation")}</p>
           <button
             className="danger"
             disabled={busy}
             onClick={() => void update({ status: "withdrawn" })}
           >
-            确认撤回
+            {t("confirmWithdrawal")}
           </button>
-          <button onClick={() => setConfirm(false)}>取消</button>
+          <button onClick={() => setConfirm(false)}>{t("cancel")}</button>
         </div>
       )}
-      <h3 className="section-title">从哪里记住</h3>
+      <h3 className="section-title">{t("sources")}</h3>
       {m.sources.length ? (
-        m.sources.map((s, i) => (
-          <details className="source" key={`${s.id}:${i}`}>
-            <summary>
-              <span>
-                {s.agent} <span className="muted">/ {s.role}</span>
-              </span>
-              <time>{date(s.at)}</time>
-            </summary>
-            <blockquote>{s.excerpt}</blockquote>
-            {s.path && <p className="file-path">{s.path}</p>}
-            <small>来源 ID：{s.id}</small>
-          </details>
-        ))
+        m.sources.map((s, i) => {
+          const roleKey = roleKeys[s.role];
+          return (
+            <details className="source" key={`${s.id}:${i}`}>
+              <summary>
+                <span>
+                  {s.agent}{" "}
+                  <span className="muted">
+                    / {roleKey ? t(roleKey) : s.role}
+                  </span>
+                </span>
+                <time>{formatDate(s.at, i18n)}</time>
+              </summary>
+              <blockquote>{s.excerpt}</blockquote>
+              {s.path && <p className="file-path">{s.path}</p>}
+              <small>{t("sourceId", { id: s.id })}</small>
+            </details>
+          );
+        })
       ) : (
-        <p className="muted">没有来源记录</p>
+        <p className="muted">{t("noSources")}</p>
       )}
       <details
         className="history"
@@ -358,29 +393,29 @@ function MemoryDetail({
           if (e.currentTarget.open && !history)
             void api<Memory[]>(`/memories/${m.id}/history`).then(
               setHistory,
-              (e) => setError(e.message),
+              (e) => setError(e),
             );
         }}
       >
-        <summary>修订历史</summary>
+        <summary>{t("revisionHistory")}</summary>
         {history?.length ? (
           history.map((h) => (
             <article key={h.etag}>
-              <b>第 {h.revision} 版</b>
-              <time>{date(h.updatedAt)}</time>
+              <b>{t("revisionNumber", { revision: h.revision })}</b>
+              <time>{formatDate(h.updatedAt, i18n)}</time>
               <p>{h.content}</p>
             </article>
           ))
         ) : (
-          <p className="muted">尚无历史修订</p>
+          <p className="muted">{t("noRevisions")}</p>
         )}
       </details>
       <footer className="detail-footer">
-        <span>创建于 {date(m.createdAt)}</span>
+        <span>{t("createdAt", { date: formatDate(m.createdAt, i18n) })}</span>
         <details>
-          <summary>查看存储位置</summary>
+          <summary>{t("viewStorageLocation")}</summary>
           <p className="file-path">{m.file}</p>
-          <small>可直接编辑 Markdown；重新读取时自动更新索引。</small>
+          <small>{t("editMarkdownHint")}</small>
         </details>
       </footer>
     </>
@@ -395,7 +430,8 @@ function CreateMemory({
   onClose(): void;
   onSaved(): void;
 }) {
-  const [error, setError] = useState("");
+  const { t } = useTranslation();
+  const [error, setError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
@@ -423,60 +459,62 @@ function CreateMemory({
             });
             onSaved();
           } catch (e) {
-            setError((e as Error).message);
+            setError(e);
           } finally {
             setBusy(false);
           }
         }}
       >
         <div className="dialog-heading">
-          <h2 id="create-title">记一条</h2>
-          <button type="button" aria-label="关闭" onClick={onClose}>
+          <h2 id="create-title">{t("addMemory")}</h2>
+          <button type="button" aria-label={t("close")} onClick={onClose}>
             <X size={20} />
           </button>
         </div>
-        <p className="muted">保存到 {project?.name ?? "全局记忆"}</p>
-        {error && (
+        <p className="muted">
+          {t("saveTo", { scope: project?.name ?? t("globalMemories") })}
+        </p>
+        {!!error && (
           <p className="alert" role="alert">
-            {error}
+            {formatError(error, t)}
           </p>
         )}
         <label className="field">
-          标题
+          {t("title")}
           <input
             autoFocus
             name="title"
             required
             maxLength={160}
-            placeholder="例如：默认使用中文沟通"
+            placeholder={t("memoryTitlePlaceholder")}
           />
         </label>
         <label className="field">
-          内容
+          {t("content")}
           <textarea
             name="content"
             required
             maxLength={16000}
             rows={6}
-            placeholder="写下希望所有工具持续记住的内容…"
+            placeholder={t("memoryContentPlaceholder")}
           />
         </label>
         <label className="field">
-          类型
+          {t("memoryKind")}
           <select name="kind">
-            {Object.entries(kindNames).map(([v, label]) => (
+            {Object.entries(kindKeys).map(([v, key]) => (
               <option value={v} key={v}>
-                {label}
+                {t(key)}
               </option>
             ))}
           </select>
         </label>
         <div className="actions">
           <button className="primary" disabled={busy}>
-            保存记忆
+            {t("saveMemory")}
           </button>
           <button type="button" onClick={onClose}>
-            取消
+            {t("cancel")}
           </button>
         </div>
       </form>

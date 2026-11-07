@@ -2,6 +2,19 @@ import { join } from "node:path";
 import { readFile } from "node:fs/promises";
 import { loadConfig } from "./config.js";
 
+import type { ErrorResponse } from "./errors.js";
+
+export class ClientError extends Error {
+  constructor(
+    public status: number,
+    public code: string,
+    message: string,
+    public details?: Record<string, unknown>,
+  ) {
+    super(message);
+  }
+}
+
 export class MemoryClient {
   constructor(
     readonly home: string,
@@ -23,8 +36,14 @@ export class MemoryClient {
         options.body === undefined ? undefined : JSON.stringify(options.body),
       signal: AbortSignal.timeout(this.timeout),
     });
-    const data = (await response.json()) as T & { error?: string };
-    if (!response.ok) throw new Error(data.error ?? `HTTP ${response.status}`);
+    const data = (await response.json()) as T & Partial<ErrorResponse>;
+    if (!response.ok)
+      throw new ClientError(
+        response.status,
+        data.code ?? "INTERNAL_ERROR",
+        data.error ?? `HTTP ${response.status}`,
+        data.details,
+      );
     return data;
   }
 }

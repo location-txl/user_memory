@@ -1,3 +1,14 @@
+export class ApiError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly code: string | undefined,
+    message: string,
+    public readonly details?: unknown,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
 export async function api<T>(
   path: string,
   options: { method?: string; body?: unknown } = {},
@@ -12,30 +23,11 @@ export async function api<T>(
   });
   const data = await response.json();
   if (!response.ok)
-    throw new Error(data.error ?? `请求失败：${response.status}`);
+    throw new ApiError(
+      response.status,
+      data.code,
+      data.error ?? `HTTP ${response.status}`,
+      data.details,
+    );
   return data as T;
 }
-export const date = (value?: string | null) =>
-  value
-    ? new Date(value).toLocaleString("zh-CN", {
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-      })
-    : "尚无记录";
-export const kindNames: Record<string, string> = {
-  preference: "偏好",
-  constraint: "约束",
-  decision: "决策",
-  lesson: "经验",
-};
-export const statusNames: Record<string, string> = {
-  active: "生效",
-  candidate: "待审核",
-  withdrawn: "已撤回",
-  pending: "等待提炼",
-  running: "提炼中",
-  done: "已处理",
-  failed: "失败",
-};

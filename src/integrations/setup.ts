@@ -45,7 +45,7 @@ export async function planSetup(
     host,
     changes: [],
     instructions: [
-      `重启宿主或重新加载扩展后，运行 ${cliCommand(home)} doctor 查看采集与召回时间。原生记忆保持原样；完成迁移验收后再切换。`,
+      `Restart the host or reload the extension, then run ${cliCommand(home)} doctor to inspect capture and recall timestamps. Native memory is unchanged; switch only after migration verification.`,
     ],
   };
   const cli = join(root, "dist", "cli.js");
@@ -79,7 +79,9 @@ export async function planSetup(
       data[key]["user-memory"] &&
       JSON.stringify(data[key]["user-memory"]) !== JSON.stringify(mcp)
     )
-      throw new Error("已存在 user-memory MCP 配置，请先检查或撤销之前的安装");
+      throw new Error(
+        "A user-memory MCP configuration already exists. Inspect or uninstall the previous installation first.",
+      );
     data[key]["user-memory"] = mcp;
   }
   function hooks(events: Record<string, any>, processHook = false) {
@@ -121,11 +123,13 @@ export async function planSetup(
           before,
         )
       )
-        throw new Error("已有同名 MCP 配置，未覆盖");
+        throw new Error(
+          "An MCP configuration with this name already exists; it was not overwritten.",
+        );
       await change(path, `${before.trimEnd()}\n\n${block}\n`);
     }
     plan.instructions.push(
-      "Codex 需要支持 SessionStart/UserPromptSubmit/Stop 的 hooks 版本，并在宿主内信任这些 hooks；若被功能开关关闭，需启用 codex_hooks。桌面端以自身内置运行时的支持为准。",
+      "Codex requires hooks supporting SessionStart/UserPromptSubmit/Stop and host trust for these hooks. Enable codex_hooks if disabled by a feature flag. Desktop support depends on its bundled runtime.",
     );
   } else if (host === "claude") {
     await json(join(targetHome, ".claude", "settings.json"), (data) => {
@@ -145,7 +149,7 @@ export async function planSetup(
       server(data.mcp, "servers");
     });
     plan.instructions.push(
-      "在 ZCode 中检查 hooks 信任状态；桌面端的 MCP 设置应出现 user-memory。",
+      "Check hook trust in ZCode. The desktop MCP settings should list user-memory.",
     );
   } else if (host === "pi") {
     await change(
@@ -156,7 +160,7 @@ export async function planSetup(
       server(data, "mcpServers"),
     );
     plan.instructions.push(
-      "Pi 使用 /reload 加载扩展；需要支持内置 MCP 的版本。",
+      "Use /reload in Pi to load the extension; a version with built-in MCP support is required.",
     );
   } else if (host === "deepseek") {
     const path = join(home, "integrations", "deepseek.cordis.yml");
@@ -180,7 +184,7 @@ export async function planSetup(
       ]),
     );
     plan.instructions.push(
-      `启动：dsh web --patch ${shellQuote(path)}。自动提炼仅采集已提交的真实用户消息；不解码 Assistant 紧凑流。`,
+      `Start with: dsh web --patch ${shellQuote(path)}. Extraction captures only submitted real user messages; it does not decode the compact Assistant stream.`,
     );
   } else {
     const directory = join(
@@ -202,7 +206,7 @@ export async function planSetup(
       stringify({ mcp_servers: { "user-memory": mcp } }),
     );
     plan.instructions.push(
-      `Provider 已准备到 ${directory}。在目标 Hermes profile 的 config.yaml 中合并 memory.provider: user-memory，并合并 ${join(home, "integrations", "hermes-mcp.yaml")}；这一步会切换 provider，安装命令不代改。多 profile 分别安装。`,
+      `Provider files are ready in ${directory}. Merge memory.provider: user-memory into the target Hermes profile config.yaml, and merge ${join(home, "integrations", "hermes-mcp.yaml")}. This switches the provider; setup does not change it automatically. Install separately for each profile.`,
     );
   }
   return plan;
@@ -213,7 +217,7 @@ export async function applySetup(home: string, plan: SetupPlan) {
   // 所有文件先做预检，防止“预览期间用户改过配置”时覆盖新内容。
   for (const change of plan.changes)
     if ((await readOptional(change.path)) !== change.before)
-      throw new Error(`文件已改变，请重新预览：${change.path}`);
+      throw new Error(`File has changed. Preview again: ${change.path}`);
   const receiptPath = join(home, "backups", `${plan.host}.json`);
   const old = await readOptional(receiptPath);
   const receipt = old
@@ -226,7 +230,7 @@ export async function applySetup(home: string, plan: SetupPlan) {
     const saved = receipt.changes.find((s) => s.path === c.path);
     if (saved && c.before !== undefined && fingerprint(c.before) !== saved.hash)
       throw new Error(
-        `安装后配置已有其他修改，请保留现有文件并手动合并：${c.path}`,
+        `Configuration has changed since installation. Keep the current file and merge manually: ${c.path}`,
       );
   }
   for (const change of plan.changes) {
@@ -258,7 +262,7 @@ export async function uninstall(home: string, host: Host, apply = false) {
     if (current === c.before) continue;
     if (current === undefined || fingerprint(current) !== c.hash)
       throw new Error(
-        `安装后配置已有其他修改，未覆盖：${c.path}。原文在 ${path}`,
+        `Configuration has changed since installation and was not overwritten: ${c.path}. The original is in ${path}`,
       );
   }
   if (apply) {

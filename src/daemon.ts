@@ -51,7 +51,7 @@ export async function startDaemon(
   worker.start();
   if (!options.quiet)
     console.log(
-      `公共记忆已启动：http://127.0.0.1:${config.port}\n数据目录：${home}\n在另一个终端运行以下命令打开管理页：\n${cliCommand(home)} web`,
+      `Shared memory started: http://127.0.0.1:${config.port}\nData directory: ${home}\nRun this command in another terminal to open the management page:\n${cliCommand(home)} web`,
     );
   const close = async () => {
     await worker.stop();

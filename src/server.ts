@@ -1,3 +1,4 @@
+import { errorResponse, validationResponse } from "./errors.js";
 import { Hono } from "hono";
 import { z, ZodError } from "zod";
 import { timingSafeEqual } from "node:crypto";
@@ -27,25 +28,29 @@ export function createApp(
   const app = new Hono();
   app.onError((error, c) => {
     if (error instanceof ZodError)
-      return c.json(
-        {
-          error: error.issues
-            .map((i) => `${i.path.join(".")}: ${i.message}`)
-            .join("；"),
-        },
-        400,
-      );
+      return c.json(validationResponse(error), 400);
     if (error instanceof AppError)
-      return c.json({ error: error.message }, error.status);
-    return c.json({ error: error.message }, 500);
+      return c.json(
+        errorResponse(error.code, error.message, error.details),
+        error.status,
+      );
+    return c.json(
+      errorResponse("INTERNAL_ERROR", error.message, {
+        diagnostic: error.message,
+      }),
+      500,
+    );
   });
   app.use("*", async (c, next) => {
     const host = new URL(c.req.url).hostname;
     if (!["127.0.0.1", "localhost", "[::1]"].includes(host))
-      return c.json({ error: "仅允许本机访问" }, 403);
+      return c.json(errorResponse("LOCAL_ONLY", "仅允许本机访问"), 403);
     const origin = c.req.header("Origin");
     if (origin && origin !== new URL(c.req.url).origin)
-      return c.json({ error: "不允许跨站请求" }, 403);
+      return c.json(
+        errorResponse("CROSS_ORIGIN_FORBIDDEN", "不允许跨站请求"),
+        403,
+      );
     c.header("X-Content-Type-Options", "nosniff");
     c.header("Cache-Control", "no-store");
     await next();
@@ -60,14 +65,14 @@ export function createApp(
       !timingSafeEqual(supplied, expected)
     )
       return c.json(
-        {
-          error:
-            "请用 umem web 打开管理页。若使用自定义数据目录，请沿用启动服务时的 --home 或 UMEM_HOME。API 请求需提供本机访问密钥。",
-        },
+        errorResponse(
+          "UNAUTHORIZED",
+          "请用 umem web 打开管理页。若使用自定义数据目录，请沿用启动服务时的 --home 或 UMEM_HOME。API 请求需提供本机访问密钥。",
+        ),
         401,
       );
     if (Number(c.req.header("Content-Length") ?? 0) > 2_000_000)
-      return c.json({ error: "请求过大" }, 413);
+      return c.json(errorResponse("PAYLOAD_TOO_LARGE", "请求过大"), 413);
     await next();
   });
   app.get("/v1/status", async (c) => {
@@ -191,7 +196,8 @@ export function createApp(
   });
   app.get("/v1/config", (c) => c.json(worker?.config ?? {}));
   app.patch("/v1/config", async (c) => {
-    if (!worker) throw new AppError(503, "后台提炼器未启动");
+    if (!worker)
+      throw new AppError(503, "后台提炼器未启动", "WORKER_UNAVAILABLE");
     const patch = ConfigSchema.omit({ port: true })
       .partial()
       .parse(await c.req.json());

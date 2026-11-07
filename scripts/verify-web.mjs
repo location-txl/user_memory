@@ -9,6 +9,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { startDaemon } from "../dist/daemon.js";
 import { initHome, atomicWrite } from "../dist/config.js";
 import { MemoryClient } from "../dist/client.js";
+import { MemoryStore } from "../dist/memory/store.js";
 
 const home = await mkdtemp(join(tmpdir(), "umem-web-"));
 const config = await initHome(home);
@@ -18,6 +19,15 @@ config.port = socket.address().port;
 await new Promise((r) => socket.close(r));
 config.extractionEnabled = false;
 await atomicWrite(join(home, "config.json"), JSON.stringify(config));
+const interrupted = await MemoryStore.open(home);
+interrupted.db
+  .prepare(
+    "INSERT INTO jobs (agent, session_id, state, updated_at) VALUES (?, ?, 'running', ?)",
+  )
+  .run("codex", "interrupted", new Date().toISOString());
+interrupted.close();
+const invalidFile = join(home, "memories", "invalid.md");
+await writeFile(invalidFile, "Missing frontmatter fixture");
 const daemon = await startDaemon(home, { quiet: true });
 const client = new MemoryClient(home);
 const browser = await chromium.launch({
@@ -75,7 +85,17 @@ try {
   page.on("pageerror", (e) => errors.push(e.message));
   const token = (await readFile(join(home, "token"), "utf8")).trim();
   await page.goto(`http://127.0.0.1:${config.port}/#token=${token}`);
+  await page
+    .getByRole("heading", { name: "Global memories", exact: true })
+    .waitFor();
+  assert.equal(await page.locator("html").getAttribute("lang"), "en");
+  await page
+    .getByRole("combobox", { name: "Language / 语言", exact: true })
+    .selectOption("zh-CN");
   await page.getByRole("heading", { name: "全局记忆", exact: true }).waitFor();
+  await page.reload();
+  await page.getByRole("heading", { name: "全局记忆", exact: true }).waitFor();
+  assert.equal(await page.locator("html").getAttribute("lang"), "zh-CN");
   await page.locator(".memory-row").first().waitFor();
   assert.equal(new URL(page.url()).hash, "");
   await page.getByRole("button", { name: /默认用中文沟通/ }).click();
@@ -87,6 +107,15 @@ try {
   await page
     .getByRole("textbox", { name: "内容", exact: true })
     .fill("网页端已纠正：继续使用中文。");
+  await page.locator(".language-select select").selectOption("en");
+  await page.getByRole("textbox", { name: "Content", exact: true }).waitFor();
+  assert.equal(
+    await page
+      .getByRole("textbox", { name: "Content", exact: true })
+      .inputValue(),
+    "网页端已纠正：继续使用中文。",
+  );
+  await page.locator(".language-select select").selectOption("zh-CN");
   await page.getByRole("button", { name: "保存修改" }).click();
   await page
     .getByText("网页端已纠正：继续使用中文。", { exact: true })
@@ -103,11 +132,30 @@ try {
     .fill("页面创建的记忆可以通过 API 读取。");
   await page.getByRole("button", { name: "保存记忆", exact: true }).click();
   await page.getByRole("button", { name: /浏览器新增验证/ }).click();
+  await page
+    .locator(".source summary")
+    .getByText("/ 手动记录", { exact: true })
+    .waitFor();
+  const manual = (await client.request("/memories?status=active")).find(
+    (memory) => memory.title === "浏览器新增验证",
+  );
+  assert.equal(manual?.sources[0].role, "manual");
   await page.getByRole("button", { name: "撤回", exact: true }).click();
   await page.getByRole("button", { name: "确认撤回" }).click();
   await page.getByLabel("记忆状态").selectOption("withdrawn");
   await page.getByRole("heading", { name: "浏览器新增验证" }).last().waitFor();
   await page.getByRole("button", { name: "导入记忆", exact: true }).click();
+  const longName = join(home, `${"a".repeat(161)}.md`);
+  await writeFile(longName, "验收文件名长度提示");
+  await page.getByLabel("绝对路径").fill(longName);
+  await page.getByRole("button", { name: "预览文件" }).click();
+  await page.getByRole("button", { name: "将 1 个文件导入待审核" }).click();
+  await page.getByText("文件名（不含 .md）最多 160 个字符。").waitFor();
+  await page.locator(".language-select select").selectOption("en");
+  await page
+    .getByText("Filename (excluding .md) must be at most 160 characters.")
+    .waitFor();
+  await page.locator(".language-select select").selectOption("zh-CN");
   const file = join(home, "native.md");
   await writeFile(file, "跨工具导入验收的偏好记录");
   await page.getByLabel("绝对路径").fill(file);
@@ -115,6 +163,13 @@ try {
   await page.getByRole("button", { name: "将 1 个文件导入待审核" }).click();
   await page.getByText("已导入 1 条记录，请到待审核中确认。").waitFor();
   await page.getByRole("button", { name: /待审核/ }).click();
+  await page.getByRole("button", { name: /native/ }).click();
+  await page
+    .locator(".source summary")
+    .getByText("/ 导入", { exact: true })
+    .waitFor();
+  const [imported] = await client.request("/memories?status=candidate");
+  assert.equal(imported?.sources[0].role, "import");
   await page.getByRole("button", { name: "确认记住" }).click();
   await page.getByRole("heading", { name: "没有待审核记录" }).waitFor();
   await page.getByRole("button", { name: "工具接入", exact: true }).click();
@@ -124,6 +179,21 @@ try {
     fullPage: true,
   });
   await page.getByRole("button", { name: "设置与任务", exact: true }).click();
+  for (const language of ["zh-CN", "en"]) {
+    await page.locator(".language-select select").selectOption(language);
+    await page
+      .getByText(
+        "The service exited before the job finished. Waiting to retry.",
+        {
+          exact: true,
+        },
+      )
+      .waitFor({ timeout: 5000 });
+    await page
+      .getByText(`${invalidFile}: Missing YAML frontmatter`, { exact: true })
+      .waitFor({ timeout: 5000 });
+  }
+  await page.locator(".language-select select").selectOption("zh-CN");
   await page.getByLabel("会话空闲多久后提炼（秒）").fill("45");
   await page.getByRole("button", { name: "保存设置", exact: true }).click();
   await page.getByText("设置已保存").waitFor();
@@ -143,6 +213,32 @@ try {
       () => document.documentElement.scrollWidth <= window.innerWidth,
     ),
   );
+  for (const language of ["en", "zh-CN"]) {
+    await page.locator(".language-select select").selectOption(language);
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
+      for (const label of language === "en"
+        ? [
+            "Global memories",
+            "Connections",
+            "Import memories",
+            "Settings & jobs",
+          ]
+        : ["全局记忆", "工具接入", "导入记忆", "设置与任务"]) {
+        await page.getByRole("button", { name: label, exact: true }).click();
+        assert.ok(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= window.innerWidth,
+          ),
+          `${language}: ${label} overflows at ${width}px`,
+        );
+      }
+      await page.screenshot({
+        path: join(output, `settings-${language}-${width}.png`),
+        fullPage: true,
+      });
+    }
+  }
   assert.deepEqual(errors, []);
   const mcp = new Client({ name: "stdio-acceptance", version: "1" });
   const transport = new StdioClientTransport({
@@ -161,14 +257,15 @@ try {
   console.log(
     JSON.stringify(
       {
-        result: "通过",
+        result: "passed",
         verified: [
-          "网页新增、修改、撤回",
-          "预览导入与批准",
-          "设置持久化",
-          "中文搜索",
-          "移动端无横向溢出",
-          "真实 MCP stdio 进程",
+          "Create, edit, and withdraw memories",
+          "Import preview and approval",
+          "Persistent settings",
+          "Chinese content and search are preserved",
+          "Persistent English and Chinese UI selection",
+          "No horizontal overflow on mobile",
+          "Real MCP stdio process",
         ],
         screenshots: output,
       },

@@ -37,7 +37,7 @@ export const MemoryMetaSchema = z
   })
   .refine(
     (m) => (m.scope === "global" ? !m.projectId : !!m.projectId),
-    "项目记忆必须关联项目，全局记忆不能关联项目",
+    "Project memories require a project. Global memories cannot have a project.",
   );
 export type MemoryMeta = z.infer<typeof MemoryMetaSchema>;
 export type Memory = MemoryMeta & {
@@ -59,10 +59,10 @@ export const CreateMemorySchema = z
     sources: z.array(SourceSchema).default([]),
     reason: z.string().optional(),
   })
-  .refine(
-    (m) => (m.scope === "global" ? !m.projectId : !!m.projectId),
-    "记忆范围与项目不匹配",
-  );
+  .refine((m) => (m.scope === "global" ? !m.projectId : !!m.projectId), {
+    message: "记忆范围与项目不匹配",
+    params: { rule: "scope_project_mismatch" },
+  });
 export type CreateMemory = z.infer<typeof CreateMemorySchema>;
 export const EventSchema = z.object({
   id: z.string().min(1).max(300),
@@ -108,11 +108,4 @@ export const ExtractionSchema = z.object({
   proposals: z.array(ProposalSchema).max(24),
 });
 export type Proposal = z.infer<typeof ProposalSchema>;
-export class AppError extends Error {
-  constructor(
-    public status: 400 | 401 | 403 | 404 | 409 | 503,
-    message: string,
-  ) {
-    super(message);
-  }
-}
+export { AppError } from "./errors.js";

@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -12,6 +13,8 @@ import {
 } from "lucide-react";
 import type { Project } from "../contracts.js";
 import { api } from "./api.js";
+import { storageKey } from "./i18n.js";
+import { formatError } from "./presentation.js";
 import { Library } from "./memory-library.js";
 import { Operations, type Status } from "./operations.js";
 import "./style.css";
@@ -22,11 +25,23 @@ if (token) {
   history.replaceState(null, "", location.pathname);
 }
 function App() {
+  const { t, i18n } = useTranslation();
+  const language = i18n.language;
+  const title = t("appTitle");
+  useEffect(() => {
+    document.documentElement.lang = language;
+    document.title = title;
+    try {
+      localStorage.setItem(storageKey, language);
+    } catch {
+      /* Storage may be disabled; switching still works. */
+    }
+  }, [language, title]);
   const [page, setPage] = useState("memories");
   const [scope, setScope] = useState("global");
   const [projects, setProjects] = useState<Project[]>([]);
   const [status, setStatus] = useState<Status>();
-  const [error, setError] = useState("");
+  const [error, setError] = useState<unknown>(null);
   const [version, setVersion] = useState(0);
   const refresh = () => setVersion((v) => v + 1);
   useEffect(() => {
@@ -41,7 +56,7 @@ function App() {
           }
         },
         (e) => {
-          if (live) setError(String(e.message));
+          if (live) setError(e);
         },
       );
     void load();
@@ -68,10 +83,11 @@ function App() {
         >
           <BookOpen size={25} />
           <span>
-            公共记忆<small>在不同工具间，接着思考。</small>
+            {t("appTitle")}
+            <small>{t("appTagline")}</small>
           </span>
         </a>
-        <nav aria-label="记忆范围">
+        <nav aria-label={t("memoryScope")}>
           <button
             className={
               page === "memories" && scope === "global" ? "selected" : ""
@@ -79,16 +95,17 @@ function App() {
             onClick={() => navigate("memories", "global")}
           >
             <Globe2 size={18} />
-            全局记忆
+            {t("globalMemories")}
           </button>
           <button
             className={page === "candidates" ? "selected" : ""}
             onClick={() => navigate("candidates", "all")}
           >
             <Inbox size={18} />
-            待审核<span className="count">{status?.candidates ?? 0}</span>
+            {t("reviewQueue")}
+            <span className="count">{status?.candidates ?? 0}</span>
           </button>
-          <div className="nav-label">项目</div>
+          <div className="nav-label">{t("projects")}</div>
           {projects.map((p) => (
             <button
               key={p.id}
@@ -102,17 +119,21 @@ function App() {
             </button>
           ))}
           {!projects.length && (
-            <p className="nav-empty">
-              工具在项目中使用记忆时，
-              <br />
-              会自动登记项目。
-            </p>
+            <p className="nav-empty">{t("automaticProjectRegistration")}</p>
           )}
-          <div className="nav-label">管理</div>
+          <div className="nav-label">{t("manage")}</div>
           {[
-            { id: "connections", label: "工具接入", Icon: Cable },
-            { id: "imports", label: "导入记忆", Icon: ArrowDownToLine },
-            { id: "settings", label: "设置与任务", Icon: SlidersHorizontal },
+            { id: "connections", label: t("connections"), Icon: Cable },
+            {
+              id: "imports",
+              label: t("importMemories"),
+              Icon: ArrowDownToLine,
+            },
+            {
+              id: "settings",
+              label: t("settingsAndJobs"),
+              Icon: SlidersHorizontal,
+            },
           ].map(({ id, label, Icon }) => (
             <button
               key={id}
@@ -124,19 +145,30 @@ function App() {
             </button>
           ))}
         </nav>
+        <label className="language-select">
+          <span>Language / 语言</span>
+          <select
+            aria-label="Language / 语言"
+            value={language}
+            onChange={(e) => void i18n.changeLanguage(e.target.value)}
+          >
+            <option value="en">English</option>
+            <option value="zh-CN">简体中文</option>
+          </select>
+        </label>
         <div className="service-state">
           <span className={`dot ${error ? "offline" : ""}`} />
-          {error ? "连接中断" : "本机服务"}
-          <button aria-label="刷新" onClick={refresh}>
+          {error ? t("disconnected") : t("localService")}
+          <button aria-label={t("refresh")} onClick={refresh}>
             <RefreshCw size={15} />
           </button>
         </div>
       </aside>
       <main>
-        {error && (
+        {!!error && (
           <div className="alert" role="alert">
-            {error}
-            <button onClick={refresh}>重新连接</button>
+            {formatError(error, t)}
+            <button onClick={refresh}>{t("reconnect")}</button>
           </div>
         )}
         {status?.errors.map((message, i) => (

@@ -8,7 +8,7 @@ import {
 
 export function decodeMemory(raw: string, file: string): Memory {
   const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)([\s\S]*)$/.exec(raw);
-  if (!match) throw new Error(`${file}: 缺少 YAML frontmatter`);
+  if (!match) throw new Error(`${file}: Missing YAML frontmatter`);
   const meta = MemoryMetaSchema.parse(parse(match[1], { maxAliasCount: 0 }));
   return { ...meta, content: match[2].trim(), file, etag: fingerprint(raw) };
 }

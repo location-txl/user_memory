@@ -95,8 +95,8 @@ export function codexExtractor(home: string, config: Config): Extractor {
           reject(
             new Error(
               timedOut
-                ? "Codex 提炼超时；任务已保留，可重试"
-                : `Codex 提炼失败（${code}）：${scrub(stderr)}`,
+                ? "Codex extraction timed out. The job can be retried."
+                : `Codex extraction failed (${code}): ${scrub(stderr)}`,
             ),
           );
       });
@@ -208,9 +208,14 @@ export class MemoryWorker {
     const evidence = proposal.sourceIds.map((id) =>
       events.find((e) => e.id === id),
     );
-    if (evidence.some((e) => !e)) throw new Error("提炼输出引用了不存在的证据");
+    if (evidence.some((e) => !e))
+      throw new Error(
+        "Extraction output references evidence that does not exist.",
+      );
     if (proposal.scope === "project" && !job.project_id)
-      throw new Error("提炼输出要求项目范围，但会话没有绑定项目");
+      throw new Error(
+        "Extraction output requires a project, but the session has no project binding.",
+      );
     await this.store.refresh();
     const all = [...this.store.memories.values()];
     const withdrawn = new Set(
@@ -257,7 +262,9 @@ export class MemoryWorker {
         current.scope !== input.scope ||
         current.projectId !== input.projectId
       )
-        throw new Error("纠正目标不在本次提炼范围内");
+        throw new Error(
+          "The correction target is outside the scope of this extraction.",
+        );
       if (current.status === "withdrawn") return;
       if (
         current.content === proposal.content &&

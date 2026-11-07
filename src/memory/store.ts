@@ -22,6 +22,7 @@ import {
   type Project,
 } from "../contracts.js";
 import { atomicWrite, initHome, readOptional } from "../config.js";
+import { errorMessages } from "../errors.js";
 import { decodeMemory, encodeMemory, scrub, terms } from "./files.js";
 
 const exec = promisify(execFile);
@@ -68,7 +69,7 @@ export class MemoryStore {
     const raw = await readOptional(join(home, "projects.json"));
     store.projects = z.array(ProjectSchema).parse(raw ? JSON.parse(raw) : []);
     store.db.exec(
-      "UPDATE jobs SET state='pending', error='上次服务退出，等待重新处理' WHERE state='running'",
+      "UPDATE jobs SET state='pending', error='The service exited before the job finished. Waiting to retry.' WHERE state='running'",
     );
     await store.refresh(true);
     return store;
@@ -109,12 +110,12 @@ export class MemoryStore {
           join(dir, file),
         );
         if (file !== `${memory.id}.md`)
-          throw new Error(`${file}: 文件名必须与 id 一致`);
+          throw new Error(`${file}: Filename must match the memory ID`);
         if (
           memory.projectId &&
           !this.projects.some((p) => p.id === memory.projectId)
         )
-          throw new Error(`${file}: 项目不存在`);
+          throw new Error(`${file}: ${errorMessages.PROJECT_NOT_FOUND}`);
         next.set(memory.id, memory);
       } catch (e) {
         errors.push(e instanceof Error ? e.message : String(e));
@@ -139,7 +140,7 @@ export class MemoryStore {
   }
   requireProject(projectId?: string) {
     if (projectId && !this.projects.some((p) => p.id === projectId))
-      throw new AppError(400, "项目不存在");
+      throw new AppError(400, "项目不存在", "PROJECT_NOT_FOUND");
   }
   async resolveProject(
     cwd?: string,
@@ -196,13 +197,19 @@ export class MemoryStore {
       const path = await realpath(root);
       const duplicate = this.projects.find((p) => p.roots.includes(path));
       if (duplicate && duplicate.id !== existingId) {
-        if (existingId) throw new AppError(409, "目录已绑定其他项目");
+        if (existingId)
+          throw new AppError(
+            409,
+            "目录已绑定其他项目",
+            "PROJECT_ALREADY_BOUND",
+          );
         return duplicate;
       }
       const project = existingId
         ? this.projects.find((p) => p.id === existingId)
         : undefined;
-      if (existingId && !project) throw new AppError(404, "项目不存在");
+      if (existingId && !project)
+        throw new AppError(404, "项目不存在", "PROJECT_NOT_FOUND");
       const result = project ?? {
         id: randomUUID(),
         name: name || path.split("/").at(-1) || path,
@@ -268,7 +275,8 @@ export class MemoryStore {
   async get(id: string) {
     await this.refresh();
     const memory = this.memories.get(id);
-    if (!memory) throw new AppError(404, "记忆不存在或文件格式无效");
+    if (!memory)
+      throw new AppError(404, "记忆不存在或文件格式无效", "MEMORY_NOT_FOUND");
     return memory;
   }
   async create(input: CreateMemory, fixedId?: string): Promise<Memory> {
@@ -314,9 +322,17 @@ export class MemoryStore {
     return this.serial(async () => {
       const memory = await this.get(id);
       if (memory.revision !== revision || memory.etag !== etag)
-        throw new AppError(409, "记忆已改变，请重新读取后修改");
+        throw new AppError(
+          409,
+          errorMessages.MEMORY_CONFLICT,
+          "MEMORY_CONFLICT",
+        );
       if (memory.status === "withdrawn")
-        throw new AppError(409, "记忆已撤回；重新记住请创建新记录");
+        throw new AppError(
+          409,
+          errorMessages.MEMORY_WITHDRAWN,
+          "MEMORY_WITHDRAWN",
+        );
       const historyDir = join(this.home, "history", id);
       await mkdir(historyDir, { recursive: true });
       await atomicWrite(
@@ -461,7 +477,7 @@ export class MemoryStore {
         this.ingest(events);
         await unlink(path);
       } catch (e) {
-        const message = `待发送文件 ${file}: ${e instanceof Error ? e.message : String(e)}`;
+        const message = `Queued event file ${file}: ${e instanceof Error ? e.message : String(e)}`;
         if (!this.errors.includes(message)) this.errors.push(message);
       }
     }

@@ -13,6 +13,8 @@ export async function previewImport(path: string) {
       throw new AppError(
         400,
         "单次导入最多 200 个文件、4 层目录，请选择更具体的目录",
+        "IMPORT_LIMIT_EXCEEDED",
+        { maxFiles: 200, maxDepth: 4 },
       );
     const info = await lstat(file);
     if (info.isSymbolicLink()) return;
@@ -26,7 +28,12 @@ export async function previewImport(path: string) {
     paths.map(async (file) => {
       const info = await lstat(file);
       if (info.size > 128000)
-        throw new AppError(400, `${basename(file)} 太大，请先拆分`);
+        throw new AppError(
+          400,
+          `${basename(file)} 太大，请先拆分`,
+          "IMPORT_FILE_TOO_LARGE",
+          { path: file, maxBytes: 128000 },
+        );
       const raw = await readFile(file, "utf8");
       const content = scrub(raw);
       return {
@@ -48,16 +55,23 @@ export async function importFiles(
 ) {
   store.requireProject(projectId);
   if (scope === "project" && !projectId)
-    throw new AppError(400, "请选择导入目标项目");
+    throw new AppError(400, "请选择导入目标项目", "IMPORT_PROJECT_REQUIRED");
   const memories = [];
   for (const file of files) {
     const raw = await readFile(file.path, "utf8");
     if (fingerprint(raw) !== file.hash)
-      throw new AppError(409, "来源文件已改变，请重新预览");
+      throw new AppError(
+        409,
+        "来源文件已改变，请重新预览",
+        "IMPORT_SOURCE_CHANGED",
+        { path: file.path },
+      );
     if (raw.length > 16000)
       throw new AppError(
         400,
         `${basename(file.path)} 超过单条记忆限制，请拆分后导入`,
+        "IMPORT_MEMORY_TOO_LARGE",
+        { path: file.path, maxLength: 16000 },
       );
     const data: CreateMemory = {
       title: basename(file.path, ".md"),
