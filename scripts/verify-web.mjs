@@ -18,13 +18,25 @@ await new Promise((r) => socket.listen(0, "127.0.0.1", r));
 config.port = socket.address().port;
 await new Promise((r) => socket.close(r));
 config.extractionEnabled = false;
+config.model = "test-model";
 await atomicWrite(join(home, "config.json"), JSON.stringify(config));
 const interrupted = await MemoryStore.open(home);
-interrupted.db
+const job = interrupted.db
   .prepare(
     "INSERT INTO jobs (agent, session_id, state, updated_at) VALUES (?, ?, 'running', ?)",
   )
   .run("codex", "interrupted", new Date().toISOString());
+interrupted.recordExtractionUsage(Number(job.lastInsertRowid), "test-model", {
+  inputTokens: 1_234_000_000,
+  cachedInputTokens: 1_200_000,
+  outputTokens: 56_000,
+});
+interrupted.recordExtractionUsage(Number(job.lastInsertRowid), "test-model", {
+  inputTokens: 10,
+  outputTokens: 0,
+});
+interrupted.recordExtractionUsage(Number(job.lastInsertRowid), "test-model");
+interrupted.recordExtractionUsage(Number(job.lastInsertRowid), null);
 interrupted.close();
 const invalidFile = join(home, "memories", "invalid.md");
 await writeFile(invalidFile, "Missing frontmatter fixture");
@@ -181,6 +193,38 @@ try {
   await page.getByRole("button", { name: "设置与任务", exact: true }).click();
   for (const language of ["zh-CN", "en"]) {
     await page.locator(".language-select select").selectOption(language);
+    const zh = language === "zh-CN";
+    for (const name of zh
+      ? ["按模型统计提炼用量", "最近提炼任务"]
+      : ["Extraction usage by model", "Recent extraction jobs"]) {
+      const section = page.getByRole("region", { name });
+      for (const label of zh
+        ? [
+            "test-model",
+            "Codex 默认（模型未上报）",
+            "调用 3 次",
+            "输入 token：1.23B",
+            "其中缓存输入：1.2M (1/3 次已上报)",
+            "输出 token：56K",
+            "总 token：1.23B",
+            "2/3 次已上报",
+            "Token 未上报",
+          ]
+        : [
+            "test-model",
+            "Codex default (model not reported)",
+            "Calls: 3",
+            "Input tokens: 1.23B",
+            "Cached input: 1.2M (1 of 3 calls reported usage)",
+            "Output tokens: 56K",
+            "Total tokens: 1.23B",
+            "2 of 3 calls reported usage",
+            "Tokens not reported",
+          ]) {
+        await section.getByText(label, { exact: true }).waitFor();
+      }
+      await section.getByTitle("1,234,000,010", { exact: true }).waitFor();
+    }
     await page
       .getByText(
         "The service exited before the job finished. Waiting to retry.",
@@ -194,10 +238,13 @@ try {
       .waitFor({ timeout: 5000 });
   }
   await page.locator(".language-select select").selectOption("zh-CN");
+  await page.getByLabel("模型（留空使用默认模型）").fill("");
   await page.getByLabel("会话空闲多久后提炼（秒）").fill("45");
   await page.getByRole("button", { name: "保存设置", exact: true }).click();
   await page.getByText("设置已保存").waitFor();
-  assert.equal((await client.request("/config")).idleSeconds, 45);
+  const savedConfig = await client.request("/config");
+  assert.equal(savedConfig.idleSeconds, 45);
+  assert.equal(savedConfig.model, "");
   await page.getByRole("button", { name: "全局记忆", exact: true }).click();
   await page.getByLabel("搜索记忆").fill("absentxyz938302");
   await page.getByRole("heading", { name: "没有匹配的记忆" }).waitFor();
@@ -262,6 +309,7 @@ try {
           "Create, edit, and withdraw memories",
           "Import preview and approval",
           "Persistent settings",
+          "Extraction token usage by requested model",
           "Chinese content and search are preserved",
           "Persistent English and Chinese UI selection",
           "No horizontal overflow on mobile",

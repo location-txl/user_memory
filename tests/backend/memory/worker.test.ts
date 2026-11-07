@@ -172,6 +172,7 @@ test("自动提炼只认最后一次事件后的空闲期", async ({ store }) =>
       expect.objectContaining({ id: "e2" }),
     ],
     [],
+    expect.any(Function),
   );
   expect(store.jobs()[0].state).toBe("done");
 });

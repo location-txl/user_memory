@@ -767,6 +767,22 @@ main {
 .jobs > p {
   font-size: 12px;
 }
+.extraction-usage {
+  list-style: none;
+  padding: 0;
+  margin: 10px 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.extraction-usage li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 8px;
+}
+.extraction-usage li > b {
+  flex-basis: 100%;
+}
 dialog::backdrop {
   background: #18384355;
 }

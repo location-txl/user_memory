@@ -41,6 +41,21 @@ export type Job = {
   error: string | null;
   updated_at: string;
 };
+export type ExtractionTokens = {
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens?: number;
+};
+export type ExtractionUsage = {
+  model: string | null;
+  calls: number;
+  reportedCalls: number;
+  cacheReportedCalls: number;
+  inputTokens: number | null;
+  cachedInputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+};
 
 export class MemoryStore {
   readonly db: Database.Database;
@@ -59,9 +74,33 @@ export class MemoryStore {
       CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(id UNINDEXED, title, body);
       CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, agent TEXT NOT NULL, session_id TEXT NOT NULL, project_id TEXT, data TEXT NOT NULL, job_id INTEGER);
       CREATE TABLE IF NOT EXISTS jobs (id INTEGER PRIMARY KEY, agent TEXT NOT NULL, session_id TEXT NOT NULL, project_id TEXT, state TEXT NOT NULL DEFAULT 'pending', error TEXT, updated_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS extraction_usage (
+        job_id INTEGER NOT NULL REFERENCES jobs(id),
+        model TEXT NOT NULL,
+        calls INTEGER NOT NULL,
+        reported_calls INTEGER NOT NULL,
+        input_tokens INTEGER,
+        cached_input_tokens INTEGER,
+        cache_reported_calls INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER,
+        PRIMARY KEY (job_id, model)
+      );
       CREATE TABLE IF NOT EXISTS receipts (agent TEXT PRIMARY KEY, captured_at TEXT, recalled_at TEXT);
       CREATE TABLE IF NOT EXISTS recalls (binding TEXT PRIMARY KEY, versions TEXT NOT NULL);
     `);
+    this.db
+      .transaction(() => {
+        const columns = this.db.pragma("table_info(extraction_usage)") as {
+          name: string;
+        }[];
+        if (!columns.some(({ name }) => name === "cached_input_tokens")) {
+          this.db.exec(`
+          ALTER TABLE extraction_usage ADD COLUMN cached_input_tokens INTEGER;
+          ALTER TABLE extraction_usage ADD COLUMN cache_reported_calls INTEGER NOT NULL DEFAULT 0;
+        `);
+        }
+      })
+      .immediate();
   }
   static async open(home: string) {
     await initHome(home);
@@ -428,10 +467,65 @@ export class MemoryStore {
     })();
     return added;
   }
+  recordExtractionUsage(
+    jobId: number,
+    model: string | null,
+    usage?: ExtractionTokens,
+  ) {
+    this.db
+      .prepare(
+        `
+        INSERT INTO extraction_usage (
+          job_id, model, calls, reported_calls, input_tokens, output_tokens,
+          cache_reported_calls, cached_input_tokens
+        )
+        VALUES (?, ?, 1, ?, ?, ?, ?, ?)
+        ON CONFLICT (job_id, model) DO UPDATE SET
+          calls = calls + 1,
+          reported_calls = reported_calls + excluded.reported_calls,
+          cache_reported_calls = cache_reported_calls + excluded.cache_reported_calls,
+          input_tokens = COALESCE(input_tokens + excluded.input_tokens, input_tokens, excluded.input_tokens),
+          cached_input_tokens = COALESCE(cached_input_tokens + excluded.cached_input_tokens, cached_input_tokens, excluded.cached_input_tokens),
+          output_tokens = COALESCE(output_tokens + excluded.output_tokens, output_tokens, excluded.output_tokens)
+      `,
+      )
+      .run(
+        jobId,
+        model ?? "",
+        usage ? 1 : 0,
+        usage?.inputTokens ?? null,
+        usage?.outputTokens ?? null,
+        usage?.cachedInputTokens === undefined ? 0 : 1,
+        usage?.cachedInputTokens ?? null,
+      );
+  }
   jobs() {
-    return this.db
+    const jobs = this.db
       .prepare("SELECT * FROM jobs ORDER BY id DESC LIMIT 100")
       .all() as Job[];
+    const usage = this.db
+      .prepare(
+        `
+      SELECT job_id, NULLIF(model, '') AS model, calls, reported_calls AS reportedCalls,
+             cache_reported_calls AS cacheReportedCalls, cached_input_tokens AS cachedInputTokens,
+             input_tokens AS inputTokens, output_tokens AS outputTokens,
+             input_tokens + output_tokens AS totalTokens
+      FROM extraction_usage
+      WHERE job_id IN (SELECT id FROM jobs ORDER BY id DESC LIMIT 100)
+      ORDER BY model
+    `,
+      )
+      .all() as (ExtractionUsage & { job_id: number })[];
+    const byJob = new Map<number, ExtractionUsage[]>();
+    for (const { job_id, ...row } of usage) {
+      const rows = byJob.get(job_id) ?? [];
+      rows.push(row);
+      byJob.set(job_id, rows);
+    }
+    return jobs.map((job) => ({
+      ...job,
+      usageByModel: byJob.get(job.id) ?? [],
+    }));
   }
   events(jobId: number) {
     return (
@@ -458,6 +552,17 @@ export class MemoryStore {
       errors: this.errors,
       receipts: this.db.prepare("SELECT * FROM receipts").all(),
       jobs: this.jobs(),
+      extractionUsageByModel: this.db
+        .prepare(
+          `
+        SELECT NULLIF(model, '') AS model, SUM(calls) AS calls,
+               SUM(cache_reported_calls) AS cacheReportedCalls, SUM(cached_input_tokens) AS cachedInputTokens,
+               SUM(reported_calls) AS reportedCalls, SUM(input_tokens) AS inputTokens,
+               SUM(output_tokens) AS outputTokens, SUM(input_tokens + output_tokens) AS totalTokens
+        FROM extraction_usage GROUP BY extraction_usage.model ORDER BY model
+      `,
+        )
+        .all() as ExtractionUsage[],
     };
   }
   async drainSpool() {

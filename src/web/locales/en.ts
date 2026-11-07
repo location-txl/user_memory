@@ -146,6 +146,19 @@ export default {
   storageDescription:
     "Memory content is in memories/*.md; revisions are in history/. Withdrawal stops use without deleting history or captured evidence.",
   recentExtractionJobs: "Recent extraction jobs",
+  extractionUsageSummary: "Extraction usage by model",
+  extractionUsageHint:
+    "Totals are grouped by the requested model and include all recorded batches and retries.",
+  noExtractionUsage: "No usage recorded.",
+  codexDefaultModel: "Codex default (model not reported)",
+  extractionCalls: "Calls: {{calls}}",
+  extractionInputTokens: "Input tokens: {{tokens}}",
+  extractionCachedInputTokens: "Cached input: {{tokens}}",
+  extractionCacheNotReported: "Cached input not reported",
+  extractionOutputTokens: "Output tokens: {{tokens}}",
+  extractionTotalTokens: "Total tokens: {{tokens}}",
+  extractionTokensNotReported: "Tokens not reported",
+  extractionUsageCoverage: "{{reported}} of {{calls}} calls reported usage",
   retryJob: "Retry job",
   noExtractionJobs:
     "No extraction jobs yet. Connect a tool and complete a conversation to see jobs here.",

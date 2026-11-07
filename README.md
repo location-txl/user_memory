@@ -207,6 +207,8 @@ umem jobs --retry <job-id>
 
 网页支持相同的记忆编辑、候选批准、撤回、来源查看、修订历史、导入预览、任务重试和提炼配置。
 
+「设置与任务」显示按请求模型汇总的提炼次数、输入、缓存输入、输出和总 token。界面用 K、M、B 简写较大的 token 数，悬停可查看原值。缓存输入已包含在输入 token 中，总量按输入加输出计算。`umem jobs` 可查看近期任务的分模型明细。分批和重试会累加，失败也会保留 Codex 已上报的用量。模型留空的调用归入「Codex 默认（模型未上报）」，未上报用量会单独标记。统计从升级后开始记录，使用支持 `codex exec --json` 的 Codex CLI。
+
 MCP 提供 `memory_search`、`memory_get`、`memory_remember`、`memory_correct`、`memory_forget`。纠正和撤回必须带上最近读到的 revision 与 etag，避免旧会话覆盖新内容。检索返回摘录，完整内容用 `memory_get` 读取。
 
 ## 导入已有记忆

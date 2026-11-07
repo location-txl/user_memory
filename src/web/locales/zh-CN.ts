@@ -128,6 +128,18 @@ export default {
   storageDescription:
     "记忆正文在 memories/*.md，修订在 history/。撤回停止使用记忆，但不会物理删除历史和采集证据。",
   recentExtractionJobs: "最近提炼任务",
+  extractionUsageSummary: "按模型统计提炼用量",
+  extractionUsageHint: "按请求的模型汇总，包含所有已记录的分批提炼和重试。",
+  noExtractionUsage: "没有用量记录。",
+  codexDefaultModel: "Codex 默认（模型未上报）",
+  extractionCalls: "调用 {{calls}} 次",
+  extractionInputTokens: "输入 token：{{tokens}}",
+  extractionCachedInputTokens: "其中缓存输入：{{tokens}}",
+  extractionCacheNotReported: "缓存输入未上报",
+  extractionOutputTokens: "输出 token：{{tokens}}",
+  extractionTotalTokens: "总 token：{{tokens}}",
+  extractionTokensNotReported: "Token 未上报",
+  extractionUsageCoverage: "{{reported}}/{{calls}} 次已上报",
   retryJob: "重试任务",
   noExtractionJobs:
     "还没有提炼任务。接入工具并完成一次对话后，记录会出现在这里。",

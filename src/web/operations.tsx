@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { Check, Copy, RefreshCw, Upload, Terminal } from "lucide-react";
 import type { Project } from "../contracts.js";
 import type { Config } from "../config.js";
+import type { ExtractionUsage, Job } from "../memory/store.js";
 import { cliCommand } from "../cli-command.js";
 import { api } from "./api.js";
 import type en from "./locales/en.js";
@@ -16,13 +17,8 @@ export type Status = {
   errors: string[];
   workerEnabled: boolean;
   receipts: { agent: string; captured_at?: string; recalled_at?: string }[];
-  jobs: {
-    id: number;
-    agent: string;
-    state: string;
-    error?: string;
-    updated_at: string;
-  }[];
+  jobs: (Job & { usageByModel: ExtractionUsage[] })[];
+  extractionUsageByModel: ExtractionUsage[];
 };
 const hosts = [
   { id: "codex", name: "Codex", mode: "hooksWithMcp" },
@@ -379,7 +375,7 @@ function Settings({ status, onChange }: { status?: Status; onChange(): void }) {
               <input
                 value={config.model ?? ""}
                 onChange={(e) =>
-                  setConfig({ ...config, model: e.target.value || undefined })
+                  setConfig({ ...config, model: e.target.value })
                 }
               />
             </label>
@@ -409,8 +405,13 @@ function Settings({ status, onChange }: { status?: Status; onChange(): void }) {
           value={`${cliCommand(status?.home, status?.canOmitHome)} export /absolute/path/memory-backup`}
         />
       </section>
-      <section className="jobs">
-        <h2>{t("recentExtractionJobs")}</h2>
+      <section className="jobs" aria-labelledby="extraction-usage-heading">
+        <h2 id="extraction-usage-heading">{t("extractionUsageSummary")}</h2>
+        <p className="muted">{t("extractionUsageHint")}</p>
+        {status && <ExtractionUsageList rows={status.extractionUsageByModel} />}
+      </section>
+      <section className="jobs" aria-labelledby="extraction-jobs-heading">
+        <h2 id="extraction-jobs-heading">{t("recentExtractionJobs")}</h2>
         {status?.jobs.length ? (
           status.jobs.map((j) => {
             const stateKey = jobStateKeys[j.state];
@@ -425,6 +426,11 @@ function Settings({ status, onChange }: { status?: Status; onChange(): void }) {
                   </span>
                   <time>{formatDate(j.updated_at, i18n)}</time>
                 </div>
+                {(j.usageByModel.length > 0 ||
+                  j.state === "done" ||
+                  j.state === "failed") && (
+                  <ExtractionUsageList rows={j.usageByModel} />
+                )}
                 {j.error && <pre>{j.error}</pre>}
                 {j.state === "failed" && (
                   <button
@@ -446,5 +452,74 @@ function Settings({ status, onChange }: { status?: Status; onChange(): void }) {
         )}
       </section>
     </div>
+  );
+}
+
+const compactTokens = new Intl.NumberFormat("en", {
+  notation: "compact",
+  maximumFractionDigits: 2,
+});
+
+function ExtractionUsageList({ rows }: { rows: ExtractionUsage[] }) {
+  const { t, i18n } = useTranslation();
+  const format = new Intl.NumberFormat(i18n.resolvedLanguage);
+  if (!rows.length)
+    return <p className="extraction-usage muted">{t("noExtractionUsage")}</p>;
+  return (
+    <ul className="extraction-usage">
+      {rows.map((row) => (
+        <li key={row.model ?? ""}>
+          <b>{row.model ?? t("codexDefaultModel")}</b>
+          <span>
+            {t("extractionCalls", { calls: format.format(row.calls) })}
+          </span>
+          {row.inputTokens === null ||
+          row.outputTokens === null ||
+          row.totalTokens === null ? (
+            <span>{t("extractionTokensNotReported")}</span>
+          ) : (
+            <>
+              <span title={format.format(row.inputTokens)}>
+                {t("extractionInputTokens", {
+                  tokens: compactTokens.format(row.inputTokens),
+                })}
+              </span>
+              {row.cachedInputTokens === null ? (
+                <span>{t("extractionCacheNotReported")}</span>
+              ) : (
+                <span title={format.format(row.cachedInputTokens)}>
+                  {t("extractionCachedInputTokens", {
+                    tokens: compactTokens.format(row.cachedInputTokens),
+                  })}
+                  {row.cacheReportedCalls < row.reportedCalls &&
+                    ` (${t("extractionUsageCoverage", {
+                      reported: format.format(row.cacheReportedCalls),
+                      calls: format.format(row.calls),
+                    })})`}
+                </span>
+              )}
+              <span title={format.format(row.outputTokens)}>
+                {t("extractionOutputTokens", {
+                  tokens: compactTokens.format(row.outputTokens),
+                })}
+              </span>
+              <span title={format.format(row.totalTokens)}>
+                {t("extractionTotalTokens", {
+                  tokens: compactTokens.format(row.totalTokens),
+                })}
+              </span>
+              {row.reportedCalls < row.calls && (
+                <span>
+                  {t("extractionUsageCoverage", {
+                    reported: format.format(row.reportedCalls),
+                    calls: format.format(row.calls),
+                  })}
+                </span>
+              )}
+            </>
+          )}
+        </li>
+      ))}
+    </ul>
   );
 }

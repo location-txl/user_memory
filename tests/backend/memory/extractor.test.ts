@@ -6,7 +6,9 @@ import { PassThrough } from "node:stream";
 import { afterEach, expect, vi } from "vitest";
 import { test } from "../fixtures.js";
 import { ConfigSchema, initHome } from "../../../src/config.js";
-import { codexExtractor } from "../../../src/memory/worker.js";
+import { EventSchema } from "../../../src/contracts.js";
+import { MemoryStore } from "../../../src/memory/store.js";
+import { codexExtractor, MemoryWorker } from "../../../src/memory/worker.js";
 
 vi.mock("node:child_process", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:child_process")>()),
@@ -20,7 +22,9 @@ afterEach(() => {
 
 function childProcess() {
   const child = Object.assign(new EventEmitter(), {
+    pid: 123,
     stdin: new PassThrough(),
+    stdout: new PassThrough(),
     stderr: new PassThrough(),
     kill: vi.fn((_signal: string) => {
       child.emit("close", null);
@@ -44,8 +48,10 @@ test.for([
   const result = join(home, "worker", "result.json");
   await writeFile(result, '{"proposals":[]}');
   const child = childProcess();
+  const recordUsage = vi.fn();
   vi.mocked(spawn).mockImplementation(() => {
     child.stdin.once("finish", () => {
+      child.stdout.write(usageEvent(17, 4));
       if (output === undefined) child.emit("close", 0);
       else
         void writeFile(result, output).then(
@@ -56,9 +62,14 @@ test.for([
     return child as unknown as ReturnType<typeof spawn>;
   });
 
-  await expect(codexExtractor(home, config)([], [])).rejects.toThrow(
-    SyntaxError,
-  );
+  await expect(
+    codexExtractor(home, config)([], [], recordUsage),
+  ).rejects.toThrow(SyntaxError);
+  expect(recordUsage).toHaveBeenCalledExactlyOnceWith(null, {
+    inputTokens: 17,
+    cachedInputTokens: 17,
+    outputTokens: 4,
+  });
   expect(await readFile(result, "utf8")).toBe("");
 });
 
@@ -66,6 +77,7 @@ test("提炼超时会终止子进程并报告可重试错误", async ({ home }) 
   await initHome(home);
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const child = childProcess();
+  const recordUsage = vi.fn();
   const started = new Promise<void>((resolve) => {
     vi.mocked(spawn).mockImplementation(() => {
       resolve();
@@ -73,13 +85,133 @@ test("提炼超时会终止子进程并报告可重试错误", async ({ home }) 
     });
   });
 
-  const extraction = codexExtractor(home, config)([], []);
+  const extraction = codexExtractor(home, config)([], [], recordUsage);
   const failed = expect(extraction).rejects.toThrow(
     "Codex extraction timed out",
   );
   await started;
+  child.stdout.write(usageEvent(11, 2));
   await vi.advanceTimersByTimeAsync(1_000);
   await failed;
   expect(child.kill).toHaveBeenCalledExactlyOnceWith("SIGTERM");
+  expect(recordUsage).toHaveBeenCalledExactlyOnceWith(null, {
+    inputTokens: 11,
+    cachedInputTokens: 11,
+    outputTokens: 2,
+  });
   expect(vi.getTimerCount()).toBe(0);
+});
+
+function usageEvent(input: number, output: number, cached = input) {
+  return (
+    JSON.stringify({
+      type: "turn.completed",
+      usage: {
+        input_tokens: input,
+        output_tokens: output,
+        cached_input_tokens: cached,
+        reasoning_output_tokens: output,
+      },
+    }) + "\n"
+  );
+}
+
+test("分批用量在失败、换模型重试和重启后仍可区分零值与未上报", async ({
+  home,
+  store,
+}) => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-11-07T00:00:00Z"));
+  store.ingest(
+    [1, 2].map((batch) =>
+      EventSchema.parse({
+        id: `batch-${batch}`,
+        agent: "codex",
+        sessionId: "usage-session",
+        role: "user",
+        content: String(batch).repeat(25_000),
+        at: new Date().toISOString(),
+      }),
+    ),
+  );
+  const results = [
+    { events: usageEvent(80, 10) + usageEvent(100, 20, 40) },
+    { events: usageEvent(200, 30, 120) + usageEvent(-1, 99), fail: true },
+    { events: "invalid json\n" + usageEvent(0, 0) },
+    { events: '{"type":"turn.completed"}\n' },
+  ];
+  vi.mocked(spawn).mockImplementation((_path, args) => {
+    expect(args).toContain("--json");
+    const result = results.shift()!;
+    const child = childProcess();
+    child.stdin.once("finish", () => {
+      child.stdout.write(result.events.slice(0, 25));
+      child.stdout.write(result.events.slice(25));
+      if (result.fail) {
+        child.stdout.write(
+          '{"type":"turn.failed","error":{"message":"Test transport failure"}}\n',
+        );
+        child.emit("close", 1);
+      } else
+        void writeFile(
+          join(home, "worker", "result.json"),
+          '{"proposals":[]}',
+        ).then(
+          () => child.emit("close", 0),
+          (error) => child.emit("error", error),
+        );
+    });
+    return child as unknown as ReturnType<typeof spawn>;
+  });
+  const worker = new MemoryWorker(store, { ...config, model: "first-model" });
+  await worker.tick(true);
+  const [failed] = store.jobs();
+  expect(failed).toMatchObject({
+    state: "failed",
+    error: "Codex extraction failed (1): Test transport failure",
+    usageByModel: [
+      {
+        model: "first-model",
+        calls: 2,
+        reportedCalls: 2,
+        cacheReportedCalls: 2,
+        inputTokens: 300,
+        cachedInputTokens: 160,
+        outputTokens: 50,
+        totalTokens: 350,
+      },
+    ],
+  });
+
+  store.retry(failed.id);
+  worker.config.model = "second-model";
+  await worker.tick(true);
+  expect(store.jobs()[0].state).toBe("done");
+  expect(
+    vi.mocked(spawn).mock.calls.map(([, args]) => args?.slice(1, 3)),
+  ).toEqual([
+    ["--model", "first-model"],
+    ["--model", "first-model"],
+    ["--model", "second-model"],
+    ["--model", "second-model"],
+  ]);
+  store.close();
+  const reopened = await MemoryStore.open(home);
+  try {
+    expect(reopened.jobs()[0].usageByModel).toEqual([
+      ...failed.usageByModel,
+      {
+        model: "second-model",
+        calls: 2,
+        reportedCalls: 1,
+        cacheReportedCalls: 1,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+      },
+    ]);
+  } finally {
+    reopened.close();
+  }
 });
