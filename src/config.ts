@@ -47,7 +47,8 @@ export async function loadConfig(home: string) {
 export async function initHome(home: string) {
   await mkdir(home, { recursive: true, mode: 0o700 });
   for (const dir of [
-    "memories",
+    "memories/global",
+    "memories/projects",
     "history",
     "spool",
     "worker",

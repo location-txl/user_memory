@@ -144,7 +144,7 @@ export default {
   dataLocation: "Data location",
   loading: "Loading…",
   storageDescription:
-    "Memory content is in memories/*.md; revisions are in history/. Withdrawal stops use without deleting history or captured evidence.",
+    "Memory content is in memories/global/ and memories/projects/; revisions are in history/. Withdrawal stops use without deleting history or captured evidence.",
   recentExtractionJobs: "Recent extraction jobs",
   extractionUsageSummary: "Extraction usage by model",
   extractionUsageHint:

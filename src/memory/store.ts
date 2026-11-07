@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   mkdir,
   readdir,
@@ -28,6 +28,7 @@ import { decodeMemory, encodeMemory, scrub, terms } from "./files.js";
 const exec = promisify(execFile);
 const ProjectSchema = z.object({
   id: Id,
+  memoryDirectory: z.string().regex(/^[\p{L}\p{N}_-]+$/u),
   name: z.string(),
   roots: z.array(z.string()),
   gitCommonDir: z.string().optional(),
@@ -126,9 +127,39 @@ export class MemoryStore {
     this.refreshTail = next.catch(() => {});
     return next;
   }
+  private memoryPath(memory: Pick<MemoryMeta, "id" | "scope" | "projectId">) {
+    if (memory.scope === "global")
+      return join(this.home, "memories", "global", `${memory.id}.md`);
+    const project = this.projects.find((p) => p.id === memory.projectId);
+    if (!project) throw new Error(errorMessages.PROJECT_NOT_FOUND);
+    return join(
+      this.home,
+      "memories",
+      "projects",
+      project.memoryDirectory,
+      `${memory.id}.md`,
+    );
+  }
   private async refreshFiles(force: boolean) {
     const dir = join(this.home, "memories");
-    const files = (await readdir(dir)).filter((f) => f.endsWith(".md")).sort();
+    const directories = [
+      "global",
+      ...this.projects.map((p) => join("projects", p.memoryDirectory)),
+    ];
+    const files: string[] = [];
+    for (const directory of directories) {
+      const entries = await readdir(join(dir, directory), {
+        withFileTypes: true,
+      }).catch((e: NodeJS.ErrnoException) => {
+        if (e.code === "ENOENT" && directory !== "global") return [];
+        throw e;
+      });
+      for (const entry of entries) {
+        if (entry.isFile() && entry.name.endsWith(".md"))
+          files.push(join(directory, entry.name));
+      }
+    }
+    files.sort();
     const signatures = new Map<string, string>();
     for (const file of files) {
       const info = await stat(join(dir, file));
@@ -148,13 +179,17 @@ export class MemoryStore {
           await readFile(join(dir, file), "utf8"),
           join(dir, file),
         );
-        if (file !== `${memory.id}.md`)
+        if (basename(file) !== `${memory.id}.md`)
           throw new Error(`${file}: Filename must match the memory ID`);
         if (
           memory.projectId &&
           !this.projects.some((p) => p.id === memory.projectId)
         )
           throw new Error(`${file}: ${errorMessages.PROJECT_NOT_FOUND}`);
+        if (join(dir, file) !== this.memoryPath(memory))
+          throw new Error(
+            `${file}: Memory directory must match its scope and project`,
+          );
         next.set(memory.id, memory);
       } catch (e) {
         errors.push(e instanceof Error ? e.message : String(e));
@@ -249,9 +284,20 @@ export class MemoryStore {
         : undefined;
       if (existingId && !project)
         throw new AppError(404, "项目不存在", "PROJECT_NOT_FOUND");
+      const id = project?.id ?? randomUUID();
+      const projectName = name || path.split("/").at(-1) || path;
+      const prefix =
+        [
+          ...projectName
+            .replace(/[^\p{L}\p{N}_-]+/gu, "-")
+            .replace(/^-+|-+$/g, ""),
+        ]
+          .slice(0, 48)
+          .join("") || "project";
       const result = project ?? {
-        id: randomUUID(),
-        name: name || path.split("/").at(-1) || path,
+        id,
+        name: projectName,
+        memoryDirectory: `${prefix}-${id}`,
         roots: [],
         gitCommonDir,
       };
@@ -342,10 +388,9 @@ export class MemoryStore {
         createdAt: now,
         updatedAt: now,
       };
-      await atomicWrite(
-        join(this.home, "memories", `${id}.md`),
-        encodeMemory(meta, scrub(content)),
-      );
+      const file = this.memoryPath(meta);
+      await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+      await atomicWrite(file, encodeMemory(meta, scrub(content)));
       await this.refresh(true);
       return this.memories.get(id)!;
     });

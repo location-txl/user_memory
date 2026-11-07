@@ -38,7 +38,7 @@ interrupted.recordExtractionUsage(Number(job.lastInsertRowid), "test-model", {
 interrupted.recordExtractionUsage(Number(job.lastInsertRowid), "test-model");
 interrupted.recordExtractionUsage(Number(job.lastInsertRowid), null);
 interrupted.close();
-const invalidFile = join(home, "memories", "invalid.md");
+const invalidFile = join(home, "memories", "global", "invalid.md");
 await writeFile(invalidFile, "Missing frontmatter fixture");
 const daemon = await startDaemon(home, { quiet: true });
 const client = new MemoryClient(home);

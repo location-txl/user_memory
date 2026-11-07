@@ -126,7 +126,7 @@ export default {
   dataLocation: "数据位置",
   loading: "正在读取…",
   storageDescription:
-    "记忆正文在 memories/*.md，修订在 history/。撤回停止使用记忆，但不会物理删除历史和采集证据。",
+    "记忆正文在 memories/global/ 和 memories/projects/，修订在 history/。撤回停止使用记忆，但不会物理删除历史和采集证据。",
   recentExtractionJobs: "最近提炼任务",
   extractionUsageSummary: "按模型统计提炼用量",
   extractionUsageHint: "按请求的模型汇总，包含所有已记录的分批提炼和重试。",

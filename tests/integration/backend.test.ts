@@ -144,7 +144,7 @@ test("API errors expose stable codes and structured validation details", async (
   expect(await malformed.json()).toMatchObject({ code: "INTERNAL_ERROR" });
 });
 test("doctor displays API diagnostics as provided", async () => {
-  const file = join(home, "memories", "中文文件.md");
+  const file = join(home, "memories", "global", "中文文件.md");
   await writeFile(file, "Missing frontmatter fixture");
   await atomicWrite(
     join(home, "config.json"),
@@ -368,10 +368,9 @@ test("Codex 空工具输出不阻塞同批有效事件入库", async () => {
   expect(await readdir(join(home, "spool"))).toEqual([]);
   const jobs = daemon.store.jobs();
   expect(jobs).toHaveLength(1);
-  expect(daemon.store.events(jobs[0].id).map(({ content }) => content)).toEqual([
-    "有效工具输出",
-    "正常回复",
-  ]);
+  expect(daemon.store.events(jobs[0].id).map(({ content }) => content)).toEqual(
+    ["有效工具输出", "正常回复"],
+  );
 });
 test("服务停机时已采集内容仍可耐久保存，重启后消费", async () => {
   await daemon.close();
@@ -493,7 +492,16 @@ test("CLI 导入预览、批准、纠正、撤回和导出走真实后端", asyn
 
   const root = join(home, "project-root");
   await mkdir(root);
-  await daemon.store.addProject(root);
+  const project = await daemon.store.addProject(root);
+  const projectMemory = await client.request<Memory>("/memories", {
+    method: "POST",
+    body: {
+      title: "项目约定",
+      content: "使用项目目录",
+      scope: "project",
+      projectId: project.id,
+    },
+  });
   expect(await cli("export", target)).toMatchObject({ directory: target });
   expect((await readdir(target)).sort()).toEqual([
     "history",
@@ -501,9 +509,24 @@ test("CLI 导入预览、批准、纠正、撤回和导出走真实后端", asyn
     "projects.json",
   ]);
   expect(
-    await readFile(join(target, "memories", `${memory.id}.md`), "utf8"),
+    await readFile(
+      join(target, "memories", "global", `${memory.id}.md`),
+      "utf8",
+    ),
   ).toBe(await readFile(memory.file, "utf8"));
   expect(await readdir(join(target, "history", memory.id))).toHaveLength(3);
+  expect(
+    await readFile(
+      join(
+        target,
+        "memories",
+        "projects",
+        project.memoryDirectory,
+        `${projectMemory.id}.md`,
+      ),
+      "utf8",
+    ),
+  ).toBe(await readFile(projectMemory.file, "utf8"));
   expect(await readFile(join(target, "projects.json"), "utf8")).toBe(
     await readFile(join(home, "projects.json"), "utf8"),
   );

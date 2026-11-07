@@ -80,6 +80,7 @@ export const EventSchema = z.object({
 export type MemoryEvent = z.infer<typeof EventSchema>;
 export type Project = {
   id: string;
+  memoryDirectory: string;
   name: string;
   roots: string[];
   gitCommonDir?: string;

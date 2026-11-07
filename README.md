@@ -227,13 +227,21 @@ umem import /项目记忆目录 --project <project-id>
 
 ## 最终存储文件
 
+项目目录使用创建时的项目名称与本工具的完整项目 ID，固定保存在 `projects.json` 的 `memoryDirectory` 字段中；修改显示名称或绑定目录别名不搬动文件。同一 Git 仓库的多个 worktree 共用项目记忆，不按 Agent 分目录。
+
+只读取全局及已登记项目目录直属的 Markdown 文件。文件名、范围和项目必须与所在目录一致，错放文件会报告错误且不加载。旧版平铺目录不再读取，不提供迁移或兼容。
+
 ```text
 ~/.user-memory/
 ├── memories/
-│   └── <id>.md             # 正文、范围、状态、来源、版本，事实源
+│   ├── global/
+│   │   └── <id>.md         # 全局记忆，Markdown 事实源
+│   └── projects/
+│       └── <name>-<projectId>/
+│           └── <id>.md     # 项目记忆，Markdown 事实源
 ├── history/<id>/
 │   └── <revision>-<hash>.md # 修改前的完整文件
-├── projects.json           # 项目 ID、目录别名、Git common dir
+├── projects.json           # 项目 ID、固定记忆目录、目录别名、Git common dir
 ├── runtime.db              # 事件、任务、回执、搜索索引
 ├── runtime.db-wal          # SQLite 运行期间可能存在
 ├── spool/                  # 宿主写入的待接收事件；服务断线时保留
