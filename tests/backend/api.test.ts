@@ -69,7 +69,7 @@ test("MCP 汇总覆盖全部匹配调用，分页和状态仅筛明细，写入�
     return (await response.json()) as McpCallsPage;
   };
   const empty = await read();
-  expect(empty.summary).toHaveLength(5);
+  expect(empty.summary).toHaveLength(7);
   expect(
     empty.summary.every((row) => row.calls === 0 && row.p95Ms === null),
   ).toBe(true);

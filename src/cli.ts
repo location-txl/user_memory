@@ -167,6 +167,50 @@ program
       }),
     ),
   );
+const evidence = program
+  .command("evidence")
+  .description("Inspect captured memory evidence");
+evidence
+  .command("search <query>")
+  .description("Search captured global and current-project events")
+  .option("--cwd <path>")
+  .option("--project <id>")
+  .option("--agent <name>")
+  .option("--session <id>")
+  .action(async (query, o) => {
+    const scope = await client().request<{ projectId?: string }>("/context", {
+      method: "POST",
+      body: { cwd: o.cwd, projectId: o.project },
+    });
+    print(
+      await client().request("/evidence/search", {
+        method: "POST",
+        body: {
+          query,
+          projectId: scope.projectId,
+          agent: o.agent,
+          sessionId: o.session,
+        },
+      }),
+    );
+  });
+evidence
+  .command("get <source-id>")
+  .description("Read a complete captured event by source ID")
+  .option("--cwd <path>")
+  .option("--project <id>")
+  .action(async (id, o) => {
+    const scope = await client().request<{ projectId?: string }>("/context", {
+      method: "POST",
+      body: { cwd: o.cwd, projectId: o.project },
+    });
+    print(
+      await client().request("/evidence/get", {
+        method: "POST",
+        body: { id, projectId: scope.projectId },
+      }),
+    );
+  });
 const memory = program
   .command("memory")
   .description("Manage memories directly");

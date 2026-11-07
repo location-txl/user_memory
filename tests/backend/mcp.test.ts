@@ -151,7 +151,7 @@ test("MCP 调用记录区分各状态，搜索只记录数量和字节", async (
   try {
     await server.connect(serverTransport);
     await client.connect(clientTransport);
-    expect((await client.listTools()).tools).toHaveLength(5);
+    expect((await client.listTools()).tools).toHaveLength(7);
     expect((await getCalls()).calls).toEqual([]);
 
     const results = await client.callTool({
@@ -308,7 +308,12 @@ test("MCP 日志无法写入时仍返回原工具结果", async ({ home, store }
         arguments: { query: "no match" },
       }),
     ).toEqual({
-      content: [{ type: "text", text: '{"total":0,"results":[]}' }],
+      content: [
+        {
+          type: "text",
+          text: '{"_memoryContext":"<user-memory-context>","total":0,"results":[]}',
+        },
+      ],
     });
     expect(stderr.mock.calls).toEqual([
       ["[user-memory] Could not record MCP call."],

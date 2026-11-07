@@ -51,3 +51,16 @@ test("客户端错误保留 HTTP 状态、业务码、消息和详情", async ({
     details: { id: "one" },
   });
 });
+
+test("非 JSON HTTP 错误保留状态而不是暴露 JSON 解析异常", async ({ home }) => {
+  await writeFile(join(home, "token"), "client-fixture-token");
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response("", { status: 431 }),
+  );
+  await expect(new MemoryClient(home).request("/status")).rejects.toMatchObject(
+    {
+      status: 431,
+      message: expect.stringContaining("HTTP 431"),
+    },
+  );
+});

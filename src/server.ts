@@ -12,6 +12,13 @@ import {
 import type { MemoryStore } from "./memory/store.js";
 import type { MemoryWorker } from "./memory/worker.js";
 import { recall } from "./memory/recall.js";
+import { memoryData } from "./memory/files.js";
+import {
+  EvidenceId,
+  EvidenceSearchSchema,
+  getEvidence,
+  searchEvidence,
+} from "./memory/evidence.js";
 import {
   importFiles,
   nativeLocations,
@@ -102,12 +109,17 @@ export function createApp(
   });
   app.post("/v1/context", async (c) => {
     const data = z
-      .object({ cwd: z.string().optional(), projectId: Id.optional() })
+      .object({
+        cwd: z.string().optional(),
+        projectId: Id.optional(),
+        create: z.boolean().default(false),
+      })
       .parse(await c.req.json());
     store.requireProject(data.projectId);
     return c.json({
       projectId:
-        data.projectId ?? (await store.resolveProject(data.cwd, true))?.id,
+        data.projectId ??
+        (await store.resolveProject(data.cwd, data.create))?.id,
     });
   });
   app.post("/v1/projects", async (c) => {
@@ -125,20 +137,22 @@ export function createApp(
   });
   app.get("/v1/memories", async (c) =>
     c.json(
-      await store.list({
-        query: c.req.query("q"),
-        projectId: c.req.query("projectId"),
-        scope: c.req.query("scope"),
-        status: c.req.query("status"),
-        allProjects: c.req.query("all") === "true",
-      }),
+      (
+        await store.list({
+          query: c.req.query("q"),
+          projectId: c.req.query("projectId"),
+          scope: c.req.query("scope"),
+          status: c.req.query("status"),
+          allProjects: c.req.query("all") === "true",
+        })
+      ).map(memoryData),
     ),
   );
   app.get("/v1/memories/:id/history", async (c) =>
-    c.json(await store.history(c.req.param("id"))),
+    c.json((await store.history(c.req.param("id"))).map(memoryData)),
   );
   app.get("/v1/memories/:id", async (c) =>
-    c.json(await store.get(Id.parse(c.req.param("id")))),
+    c.json(memoryData(await store.get(Id.parse(c.req.param("id"))))),
   );
   app.post("/v1/memories", async (c) => {
     const data = CreateMemorySchema.parse(await c.req.json());
@@ -150,7 +164,7 @@ export function createApp(
         excerpt: data.content.slice(0, 4000),
         at: new Date().toISOString(),
       });
-    return c.json(await store.create(data), 201);
+    return c.json(memoryData(await store.create(data)), 201);
   });
   app.patch("/v1/memories/:id", async (c) => {
     const data = z
@@ -165,12 +179,37 @@ export function createApp(
       .parse(await c.req.json());
     const { revision, etag, ...changes } = data;
     return c.json(
-      await store.revise(Id.parse(c.req.param("id")), revision, changes, etag),
+      memoryData(
+        await store.revise(
+          Id.parse(c.req.param("id")),
+          revision,
+          changes,
+          etag,
+        ),
+      ),
     );
   });
   app.post("/v1/recall", async (c) =>
     c.json(await recall(store, RecallSchema.parse(await c.req.json()))),
   );
+  app.post("/v1/evidence/search", async (c) =>
+    c.json(
+      memoryData(
+        await searchEvidence(
+          store,
+          EvidenceSearchSchema.parse(await c.req.json()),
+        ),
+      ),
+    ),
+  );
+  app.post("/v1/evidence/get", async (c) => {
+    const data = z
+      .object({ id: EvidenceId, projectId: Id.optional() })
+      .parse(await c.req.json());
+    return c.json(
+      memoryData(await getEvidence(store, data.id, data.projectId)),
+    );
+  });
   app.post("/v1/ingest", async (c) => {
     const events = z
       .array(EventSchema)
@@ -194,7 +233,7 @@ export function createApp(
     const data = z
       .object({ path: z.string().min(1) })
       .parse(await c.req.json());
-    return c.json(await previewImport(data.path));
+    return c.json((await previewImport(data.path)).map(memoryData));
   });
   app.post("/v1/imports/confirm", async (c) => {
     const data = z
@@ -207,7 +246,9 @@ export function createApp(
       })
       .parse(await c.req.json());
     return c.json(
-      await importFiles(store, data.files, data.scope, data.projectId),
+      (await importFiles(store, data.files, data.scope, data.projectId)).map(
+        memoryData,
+      ),
     );
   });
   app.get("/v1/config", (c) => c.json(worker?.config ?? {}));

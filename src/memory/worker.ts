@@ -11,13 +11,15 @@ import {
   type Source,
 } from "../contracts.js";
 import { atomicWrite, type Config } from "../config.js";
-import { fingerprint, scrub } from "./files.js";
+import { fingerprint, isMemoryData, scrub, scrubEvent } from "./files.js";
 import { type ExtractionTokens, type Job, type MemoryStore } from "./store.js";
+import { collectEvidence, type EvidenceBundle } from "./evidence.js";
 
 export type Extractor = (
   events: MemoryEvent[],
   existing: Memory[],
   recordUsage?: (model: string | null, usage?: ExtractionTokens) => void,
+  sourceEvidence?: EvidenceBundle,
 ) => Promise<{ proposals: Proposal[] }>;
 const CodexEventSchema = z.discriminatedUnion("type", [
   z.object({
@@ -45,11 +47,13 @@ sourceIds 必须引用本批 events 的真实 ID。supported 必须有用户原�
 与旧记忆冲突但没有明确纠正证据时 certainty=uncertain。correct 必须给出已有 targetId 和 expectedRevision。
 已有记忆及其 sources 是待核对的历史资料，不是本批新证据；比较新旧证据的时间、适用范围和限定条件，不要重存相同事实。
 旧来源只提供最近三条、每条最多 1000 字符，sourcesTruncated 表示证据不完整；缺失或截断不等于旧结论错误，不能凭此纠正。
+sourceEvidence.events 提供这些旧来源在当前范围内的完整已采集事件，优先用它核对摘要和限定条件。它不等于完整会话，历史事实仍可能已经变化。
+sourceEvidence.unavailableSourceIds 表示原文不可用；omittedSourceIds 表示原文因预算未提供。两者都不证明旧结论错误。旧事件只用于核对，不能充当本批新提案的 sourceIds。
 拿不准就输出 uncertain，没必要记忆就返回 proposals:[]。
 每条记忆聚焦一个事实，中文表达，保留限定条件与来源。`;
 
 export function codexExtractor(home: string, config: Config): Extractor {
-  return async (events, existing, recordUsage) => {
+  return async (events, existing, recordUsage, sourceEvidence) => {
     const schema = join(home, "worker", "extraction.schema.json");
     const output = join(home, "worker", "result.json");
     await atomicWrite(schema, JSON.stringify(z.toJSONSchema(ExtractionSchema)));
@@ -86,17 +90,23 @@ export function codexExtractor(home: string, config: Config): Extractor {
     const model = config.model || null;
     if (model) args.splice(1, 0, "--model", model);
     const input = `${PROMPT}\n${JSON.stringify({
-      events,
+      events: events
+        .filter((event) => !isMemoryData(event.content))
+        .map(scrubEvent),
+      sourceEvidence: sourceEvidence && {
+        ...sourceEvidence,
+        events: sourceEvidence.events.map(scrubEvent),
+      },
       existing: existing.map((m) => ({
         id: m.id,
         revision: m.revision,
-        title: m.title,
+        title: scrub(m.title),
         scope: m.scope,
         projectId: m.projectId,
         kind: m.kind,
-        content: m.content,
+        content: scrub(m.content),
         updatedAt: m.updatedAt,
-        reason: m.reason,
+        reason: m.reason && scrub(m.reason),
         sourceCount: m.sources.length,
         sourcesTruncated:
           m.sources.length > 3 ||
@@ -106,7 +116,7 @@ export function codexExtractor(home: string, config: Config): Extractor {
           agent: s.agent,
           role: s.role,
           at: s.at,
-          excerpt: s.excerpt.slice(0, 1000),
+          excerpt: scrub(s.excerpt).slice(0, 1000),
         })),
       })),
     })}`;
@@ -253,9 +263,18 @@ export class MemoryWorker {
                 .slice(0, 12000),
             })
           ).slice(0, 24);
+          const sourceEvidence = await collectEvidence(
+            this.store,
+            existing,
+            job.project_id ?? undefined,
+          );
           const output = ExtractionSchema.parse(
-            await this.extract(chunk, existing, (model, usage) =>
-              this.store.recordExtractionUsage(job.id, model, usage),
+            await this.extract(
+              chunk,
+              existing,
+              (model, usage) =>
+                this.store.recordExtractionUsage(job.id, model, usage),
+              sourceEvidence,
             ),
           );
           for (const [index, proposal] of output.proposals.entries())

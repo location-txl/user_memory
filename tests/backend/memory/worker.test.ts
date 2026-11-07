@@ -2,7 +2,7 @@ import { afterEach, expect, vi } from "vitest";
 import { readFile } from "node:fs/promises";
 import { test, addTestProject } from "../fixtures.js";
 import { MemoryStore } from "../../../src/memory/store.js";
-import { MemoryWorker } from "../../../src/memory/worker.js";
+import { MemoryWorker, type Extractor } from "../../../src/memory/worker.js";
 import { ConfigSchema } from "../../../src/config.js";
 import {
   CreateMemorySchema,
@@ -173,6 +173,7 @@ test("自动提炼只认最后一次事件后的空闲期", async ({ store }) =>
     ],
     [],
     expect.any(Function),
+    { events: [], unavailableSourceIds: [], omittedSourceIds: [] },
   );
   expect(store.jobs()[0].state).toBe("done");
 });
@@ -340,3 +341,75 @@ test("另一个项目的事件不能纠正目标记忆", async ({ store }) => {
   expect(await store.list({ allProjects: true })).toEqual([original]);
   expect(await store.history(original.id)).toEqual([]);
 });
+
+test.for([false, true])(
+  "提炼核对旧原文，但旧来源不能冒充新证据：%s",
+  async (reuseOldSource, { store }) => {
+    const old = event({
+      id: "old",
+      content: `TypeScript ${"背景".repeat(2500)} 只限测试工具`,
+    });
+    store.ingest([old]);
+    store.db.exec("UPDATE jobs SET state='done'");
+    const original = await store.create(
+      CreateMemorySchema.parse({
+        title: "TypeScript 约束",
+        content: "所有工具使用 TypeScript",
+        scope: "global",
+        sources: [
+          {
+            id: old.id,
+            agent: old.agent,
+            role: old.role,
+            sessionId: old.sessionId,
+            at: old.at,
+            excerpt: old.content.slice(0, 4000),
+          },
+        ],
+      }),
+    );
+    const current = event({
+      id: "new",
+      content: "TypeScript 仅用于测试工具，其他工具不受此约束",
+    });
+    store.ingest([current]);
+    const extract = vi.fn<Extractor>(
+      async (events, existing, _usage, evidence) => {
+        expect(events).toEqual([current]);
+        expect(existing).toMatchObject([{ id: original.id }]);
+        expect(evidence).toEqual({
+          events: [old],
+          unavailableSourceIds: [],
+          omittedSourceIds: [],
+        });
+        expect(existing[0].sources[0].excerpt).not.toContain("只限测试工具");
+        return {
+          proposals: [
+            proposal({
+              action: "correct",
+              targetId: original.id,
+              expectedRevision: original.revision,
+              content: "仅测试工具使用 TypeScript",
+              sourceIds: [reuseOldSource ? old.id : current.id],
+            }),
+          ],
+        };
+      },
+    );
+    await new MemoryWorker(store, config, extract).tick(true);
+    expect(extract).toHaveBeenCalledOnce();
+    if (reuseOldSource) {
+      expect(store.jobs()[0]).toMatchObject({
+        state: "failed",
+        error: expect.stringContaining("does not exist"),
+      });
+      expect(await store.get(original.id)).toEqual(original);
+    } else {
+      expect(store.jobs()[0].state).toBe("done");
+      expect(await store.get(original.id)).toMatchObject({
+        revision: 2,
+        content: "仅测试工具使用 TypeScript",
+      });
+    }
+  },
+);

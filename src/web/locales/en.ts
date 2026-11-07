@@ -10,6 +10,8 @@ const errors = {
   error_PROJECT_NOT_FOUND: "Project does not exist.",
   error_PROJECT_ALREADY_BOUND: "Directory is already bound to another project.",
   error_MEMORY_NOT_FOUND: "Memory does not exist or its file is invalid.",
+  error_EVIDENCE_NOT_FOUND:
+    "Evidence was not captured, has been withdrawn, or is outside the current project. Check the memory's saved source excerpt.",
   error_MEMORY_CONFLICT: "Memory has changed. Reload it before editing.",
   error_MEMORY_WITHDRAWN:
     "Memory has been withdrawn. Create a new record to remember it again.",
@@ -42,7 +44,7 @@ export default {
   refresh: "Refresh",
   reconnect: "Reconnect",
   automaticProjectRegistration:
-    "Projects are registered automatically when tools use memories in them.",
+    "Session recall, message capture, and saving project memories register projects automatically.",
   reviewQueueDescription:
     "Review uncertain evidence before it appears in recall.",
   projectMemoriesDescription:

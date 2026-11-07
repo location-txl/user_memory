@@ -256,9 +256,31 @@ test("提炼输入携带旧记忆的范围和来源，明确标记不完整证�
   await codexExtractor(home, config)(
     [],
     [memory, { ...memory, sources: [sources[0]] }],
+    undefined,
+    {
+      events: [
+        EventSchema.parse({
+          id: sources[3].id,
+          agent: "codex",
+          sessionId: "original-session",
+          role: "user",
+          at: sources[3].at,
+          content: `${"背景".repeat(1000)} 只适用于旧版`,
+        }),
+      ],
+      unavailableSourceIds: [sources[1].id],
+      omittedSourceIds: [sources[2].id],
+    },
   );
   const payload = JSON.parse(sent.slice(sent.indexOf('{"events":')));
   expect(payload.events).toEqual([]);
+  expect(payload.sourceEvidence).toMatchObject({
+    events: [
+      { id: sources[3].id, content: expect.stringContaining("只适用于旧版") },
+    ],
+    unavailableSourceIds: [sources[1].id],
+    omittedSourceIds: [sources[2].id],
+  });
   expect(payload.existing[0]).toMatchObject({
     id: memory.id,
     revision: 1,
@@ -280,3 +302,69 @@ test("提炼输入携带旧记忆的范围和来源，明确标记不完整证�
     sources: [sources[0]],
   });
 });
+
+test.for(["plain", "wrapped"])(
+  "旧事件和旧 Markdown 中的 JSON 凭据在模型输入出口被隐去：%s",
+  async (format, { home, store }) => {
+    const secret = "synthetic-model-input-secret";
+    const payload = JSON.stringify({
+      access_token: secret,
+      result: "保留正常证据",
+    });
+    const content = `${"历史上下文 ".repeat(700)} ${format === "wrapped" ? JSON.stringify({ content: [{ type: "text", text: payload }] }) : payload}`;
+    const rawEvent = EventSchema.parse({
+      id: "old-secret",
+      agent: "codex",
+      sessionId: "old",
+      role: "tool",
+      content,
+      at: "2026-11-07T00:00:00Z",
+    });
+    const memory = await store.create(
+      CreateMemorySchema.parse({
+        title: "旧约束",
+        content: "保留正常证据",
+        scope: "global",
+      }),
+    );
+    let sent = "";
+    const child = childProcess();
+    child.stdin.on("data", (chunk) => (sent += chunk.toString()));
+    vi.mocked(spawn).mockImplementation(() => {
+      child.stdin.once("finish", () => {
+        void writeFile(
+          join(home, "worker", "result.json"),
+          '{"proposals":[]}',
+        ).then(
+          () => child.emit("close", 0),
+          (error) => child.emit("error", error),
+        );
+      });
+      return child as unknown as ReturnType<typeof spawn>;
+    });
+    await codexExtractor(home, config)(
+      [rawEvent],
+      [
+        {
+          ...memory,
+          content: JSON.stringify({ refresh_token: secret }),
+          sources: [
+            {
+              id: rawEvent.id,
+              agent: "codex",
+              role: "tool",
+              at: rawEvent.at,
+              excerpt: JSON.stringify({ password: secret }),
+            },
+          ],
+        },
+      ],
+      undefined,
+      { events: [rawEvent], unavailableSourceIds: [], omittedSourceIds: [] },
+    );
+    expect(sent).toContain("保留正常证据");
+    expect(sent).toContain("sourceEvidence");
+    expect(sent).not.toContain(secret);
+    expect(sent).toContain("已隐去凭据");
+  },
+);

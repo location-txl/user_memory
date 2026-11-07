@@ -4,6 +4,7 @@ import {
   MemoryMetaSchema,
   type Memory,
   type MemoryMeta,
+  type MemoryEvent,
 } from "../contracts.js";
 
 export function decodeMemory(raw: string, file: string): Memory {
@@ -34,15 +35,47 @@ export function terms(value: string) {
     .map((v) => v.segment)
     .join(" ");
 }
-export function scrub(value: string) {
-  return value
-    .replace(
-      /\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,})\b/g,
-      "[已隐去凭据]",
-    )
-    .replace(/\b(Bearer\s+)[A-Za-z0-9._~-]{12,}/gi, "$1[已隐去凭据]")
-    .replace(
-      /((?:api[_-]?key|access[_-]?token|password|secret)\s*[:=]\s*)[^\s,;]+/gi,
-      "$1[已隐去凭据]",
-    );
+export function scrub(value: string): string {
+  return (
+    value
+      // 工具常把 JSON 再包进 output/text 字符串；先解码字符串层，再按字段脱敏。
+      .replace(
+        /"(?:\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})|[^"\\\u0000-\u001f])*"/g,
+        (literal) => {
+          if (!literal.includes("\\")) return literal;
+          const decoded = JSON.parse(literal) as string;
+          const redacted = scrub(decoded);
+          return redacted === decoded ? literal : JSON.stringify(redacted);
+        },
+      )
+      .replace(
+        /\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,})\b/g,
+        "[已隐去凭据]",
+      )
+      .replace(/\b(Bearer\s+)[A-Za-z0-9._~-]{12,}/gi, "$1[已隐去凭据]")
+      .replace(
+        /((?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|password|secret)["']?\s*[:=]\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\[已隐去凭据\]|[^\s,;}\]]+)/gi,
+        (_match, key: string, credential: string) => {
+          const quote =
+            credential.startsWith('"') || /"\s*[:=]\s*$/.test(key)
+              ? '"'
+              : credential.startsWith("'") || /'\s*[:=]\s*$/.test(key)
+                ? "'"
+                : "";
+          return `${key}${quote}[已隐去凭据]${quote}`;
+        },
+      )
+  );
+}
+
+export function scrubEvent(event: MemoryEvent): MemoryEvent {
+  return { ...event, content: scrub(event.content) };
+}
+
+export function isMemoryData(content: string) {
+  return content.includes("<user-memory-context>");
+}
+
+export function memoryData<T extends object>(data: T) {
+  return { _memoryContext: "<user-memory-context>", ...data };
 }

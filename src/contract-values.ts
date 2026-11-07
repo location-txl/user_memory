@@ -14,6 +14,8 @@ export const mcpTools = [
   "memory_remember",
   "memory_correct",
   "memory_forget",
+  "memory_evidence_search",
+  "memory_evidence_get",
   "unknown",
 ] as const;
 export const mcpOutcomes = [

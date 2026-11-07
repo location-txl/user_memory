@@ -10,6 +10,8 @@ export const errorMessages = {
   PROJECT_NOT_FOUND: "Project does not exist.",
   PROJECT_ALREADY_BOUND: "Directory is already bound to another project.",
   MEMORY_NOT_FOUND: "Memory does not exist or its file is invalid.",
+  EVIDENCE_NOT_FOUND:
+    "Evidence was not captured, has been withdrawn, or is outside the current project. Check the memory's saved source excerpt.",
   MEMORY_CONFLICT: "Memory has changed. Read it again before editing.",
   MEMORY_WITHDRAWN:
     "Memory has been withdrawn. Create a new record to remember it again.",

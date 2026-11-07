@@ -67,3 +67,58 @@ test.each([
   });
   if (input !== expected) expect(raw).not.toContain(input);
 });
+
+test.each([
+  "access_token",
+  "refresh_token",
+  "id_token",
+  "api_key",
+  "client_secret",
+  "password",
+  "secret",
+])("JSON 凭据字段 %s 脱敏后仍为合法 JSON，普通字段保持原文", (key) => {
+  const secret = 'synthetic-invalid-credential with spaces "and quotes"';
+  const raw = JSON.stringify({
+    [key]: secret,
+    message: "正常工具结果",
+    count: 3,
+  });
+  expect(raw).toContain("synthetic-invalid-credential");
+  expect(JSON.parse(scrub(raw))).toEqual({
+    [key]: marker,
+    message: "正常工具结果",
+    count: 3,
+  });
+  expect(scrub(scrub(raw))).toBe(scrub(raw));
+});
+
+test.each(["", "Tool output:\n"])(
+  "JSON 字符串包装中的凭据递归脱敏：%s",
+  (prefix) => {
+    const secret = "synthetic-nested-oauth-secret";
+    const inner = JSON.stringify({ access_token: secret, message: "保留原文" });
+    const wrapped = JSON.stringify({
+      content: [{ type: "text", text: JSON.stringify({ output: inner }) }],
+    });
+    const input = prefix + wrapped;
+    expect(input).toContain(secret);
+    const safe = scrub(input);
+    expect(safe).not.toContain(secret);
+    expect(safe).toContain("保留原文");
+    expect(scrub(safe)).toBe(safe);
+    const outer = JSON.parse(safe.slice(prefix.length));
+    const middle = JSON.parse(outer.content[0].text);
+    expect(JSON.parse(middle.output)).toEqual({
+      access_token: marker,
+      message: "保留原文",
+    });
+    expect(scrub(`client_secret=${secret}`)).toBe(`client_secret=${marker}`);
+  },
+);
+
+test("JSON 非字符串凭据和数组边界脱敏后仍可解析", () => {
+  const input = '[{"password":1234},{"access_token":null},{"secret":false}]';
+  const result = scrub(input);
+  expect(result).not.toContain("1234");
+  expect(() => JSON.parse(result)).not.toThrow();
+});

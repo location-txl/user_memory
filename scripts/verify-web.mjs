@@ -302,7 +302,18 @@ try {
   });
   try {
     await mcp.connect(transport);
-    assert.equal((await mcp.listTools()).tools.length, 5);
+    assert.deepEqual(
+      (await mcp.listTools()).tools.map((tool) => tool.name).sort(),
+      [
+        "memory_correct",
+        "memory_evidence_get",
+        "memory_evidence_search",
+        "memory_forget",
+        "memory_get",
+        "memory_remember",
+        "memory_search",
+      ],
+    );
     const found = await mcp.callTool({
       name: "memory_search",
       arguments: { query: "中文" },

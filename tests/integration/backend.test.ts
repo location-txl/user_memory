@@ -77,6 +77,135 @@ test("真实 HTTP 鉴权、跨站拒绝、记忆 CRUD 和版本冲突", async ()
     }),
   ).rejects.toMatchObject({ code: "MEMORY_CONFLICT", status: 409 });
 });
+
+test("证据经过真实 HTTP、CLI 与 MCP stdio，保留原文并限制项目范围", async () => {
+  const root = join(home, "evidence-project");
+  await mkdir(root);
+  const project = await daemon.store.addProject(root);
+  const global = EventSchema.parse({
+    id: "evidence:global",
+    agent: "codex",
+    sessionId: "evidence-session",
+    role: "user",
+    at: "2026-11-07T00:00:00Z",
+    content: "构建约定在所有项目生效",
+  });
+  const local = EventSchema.parse({
+    ...global,
+    id: "evidence:project/原文 ?#",
+    projectId: project.id,
+    role: "tool",
+    content: `构建 ${"详情".repeat(1000)} 最后条件：仅测试环境`,
+  });
+  await client.request("/ingest", { method: "POST", body: [global, local] });
+  expect(
+    (
+      await fetch(`http://127.0.0.1:${port}/v1/evidence/search`, {
+        method: "POST",
+      })
+    ).status,
+  ).toBe(401);
+  await expect(
+    client.request("/evidence/search", { method: "POST", body: { query: "" } }),
+  ).rejects.toMatchObject({
+    code: "VALIDATION_ERROR",
+  });
+  await expect(
+    client.request("/evidence/get", { method: "POST", body: { id: local.id } }),
+  ).rejects.toMatchObject({ code: "EVIDENCE_NOT_FOUND" });
+
+  const cli = async (...args: string[]) => {
+    const { stdout } = await promisify(execFile)(process.execPath, [
+      "--import",
+      "tsx",
+      resolve("src/cli.ts"),
+      "--home",
+      home,
+      "evidence",
+      ...args,
+    ]);
+    return JSON.parse(stdout);
+  };
+  expect(await cli("search", "构建")).toMatchObject({
+    total: 1,
+    results: [{ id: global.id }],
+  });
+  expect(
+    await cli(
+      "search",
+      "构建",
+      "--cwd",
+      root,
+      "--agent",
+      "codex",
+      "--session",
+      global.sessionId,
+    ),
+  ).toMatchObject({ total: 2 });
+  expect(await cli("get", local.id, "--project", project.id)).toEqual({
+    _memoryContext: "<user-memory-context>",
+    ...local,
+  });
+
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [
+      "--import",
+      "tsx",
+      resolve("src/cli.ts"),
+      "--home",
+      home,
+      "mcp",
+      "--agent",
+      "pi",
+    ],
+    stderr: "pipe",
+  });
+  const mcp = new Client({ name: "evidence-test", version: "1" });
+  try {
+    await mcp.connect(transport, { timeout: 5_000 });
+    const search = await mcp.callTool({
+      name: "memory_evidence_search",
+      arguments: { query: "构建", cwd: root },
+    });
+    expect(search.isError).not.toBe(true);
+    expect(
+      JSON.parse((search.content as { text: string }[])[0].text),
+    ).toMatchObject({ total: 2 });
+    const result = await mcp.callTool({
+      name: "memory_evidence_get",
+      arguments: { id: local.id, cwd: root },
+    });
+    expect(result.isError).not.toBe(true);
+    expect(JSON.parse((result.content as { text: string }[])[0].text)).toEqual({
+      _memoryContext: "<user-memory-context>",
+      ...local,
+    });
+    const forbidden = await mcp.callTool({
+      name: "memory_evidence_get",
+      arguments: { id: local.id },
+    });
+    expect(forbidden.isError).toBe(true);
+    expect(JSON.stringify(forbidden)).not.toContain(local.content);
+    expect((await client.request<McpCallsPage>("/mcp-calls")).calls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          tool: "memory_evidence_search",
+          searchTotal: 2,
+          searchReturned: 2,
+          outcome: "success",
+        }),
+        expect.objectContaining({
+          tool: "memory_evidence_get",
+          outcome: "tool_error",
+          errorCode: "EVIDENCE_NOT_FOUND",
+        }),
+      ]),
+    );
+  } finally {
+    await transport.close();
+  }
+});
 test("API errors expose stable codes and structured validation details", async () => {
   const unauthorized = await fetch(`http://127.0.0.1:${port}/v1/status`);
   expect(await unauthorized.json()).toMatchObject({
@@ -207,7 +336,7 @@ test("MCP 实际协议握手、写入和项目访问边界", async () => {
   await server.connect(a);
   await mcp.connect(b);
   try {
-    expect((await mcp.listTools()).tools).toHaveLength(5);
+    expect((await mcp.listTools()).tools).toHaveLength(7);
     const added = await mcp.callTool({
       name: "memory_remember",
       arguments: {
@@ -432,7 +561,7 @@ test("真实 MCP stdio 调用可搜索记忆，后台离线的失败也在重启
   const mcp = new Client({ name: "stdio-test", version: "1" });
   try {
     await mcp.connect(transport, { timeout: 5_000 });
-    expect((await mcp.listTools({}, { timeout: 5_000 })).tools).toHaveLength(5);
+    expect((await mcp.listTools({}, { timeout: 5_000 })).tools).toHaveLength(7);
     const found = await mcp.callTool(
       { name: "memory_search", arguments: { query: "Rust" } },
       undefined,

@@ -23,7 +23,15 @@ import {
 } from "../contracts.js";
 import { atomicWrite, initHome, readOptional } from "../config.js";
 import { errorMessages } from "../errors.js";
-import { decodeMemory, encodeMemory, scrub, terms } from "./files.js";
+import {
+  decodeMemory,
+  encodeMemory,
+  isMemoryData,
+  scrub,
+  scrubEvent,
+  terms,
+} from "./files.js";
+import { initializeEvidenceIndex } from "./evidence.js";
 
 const exec = promisify(execFile);
 const ProjectSchema = z.object({
@@ -102,6 +110,7 @@ export class MemoryStore {
         }
       })
       .immediate();
+    initializeEvidenceIndex(this.db);
   }
   static async open(home: string) {
     await initHome(home);
@@ -461,7 +470,8 @@ export class MemoryStore {
     let added = 0;
     this.db.transaction(() => {
       for (const event of events) {
-        if (event.injected || event.worker) continue;
+        if (event.injected || event.worker || isMemoryData(event.content))
+          continue;
         this.requireProject(event.projectId);
         const saved = { ...event, content: scrub(event.content) };
         const result = this.db
@@ -476,6 +486,9 @@ export class MemoryStore {
             JSON.stringify(saved),
           );
         if (!result.changes) continue;
+        this.db
+          .prepare("INSERT INTO event_fts(rowid,body) VALUES (?,?)")
+          .run(result.lastInsertRowid, terms(saved.content));
         added++;
         this.db
           .prepare(
@@ -577,7 +590,13 @@ export class MemoryStore {
       this.db
         .prepare("SELECT data FROM events WHERE job_id=? ORDER BY rowid")
         .all(jobId) as { data: string }[]
-    ).map((r) => JSON.parse(r.data) as MemoryEvent);
+    )
+      .map((r) => JSON.parse(r.data) as MemoryEvent)
+      .filter(
+        (event) =>
+          !event.injected && !event.worker && !isMemoryData(event.content),
+      )
+      .map(scrubEvent);
   }
   retry(jobId: number) {
     return this.db

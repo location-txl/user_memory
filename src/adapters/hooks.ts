@@ -6,7 +6,7 @@ import { StringDecoder } from "node:string_decoder";
 import { atomicWrite, initHome, readOptional } from "../config.js";
 import { MemoryClient } from "../client.js";
 import { type Agent, type MemoryEvent } from "../contracts.js";
-import { fingerprint, scrub } from "../memory/files.js";
+import { fingerprint, isMemoryData, scrub } from "../memory/files.js";
 
 const HookInput = z
   .object({
@@ -66,7 +66,7 @@ export function transcriptEvent(
     .object({ type: z.literal("function_call_output"), output: z.string() })
     .safeParse(row.payload);
   if (agent === "codex" && toolOutput.success) {
-    if (toolOutput.data.output === "") return;
+    if (!toolOutput.data.output || isMemoryData(toolOutput.data.output)) return;
     return {
       id: `${agent}:${sessionId}:${fingerprint(`${offset}:${line}`).slice(0, 24)}`,
       agent,
@@ -88,7 +88,7 @@ export function transcriptEvent(
   const message = Message.safeParse(value);
   if (!message.success) return;
   const content = plainText(message.data.content);
-  if (!content || content.includes("<user-memory-context>")) return;
+  if (!content || isMemoryData(content)) return;
   return {
     id: `${agent}:${sessionId}:${row.uuid ?? row.id ?? fingerprint(`${offset}:${line}`).slice(0, 24)}`,
     agent,
@@ -102,6 +102,7 @@ export function transcriptEvent(
   };
 }
 export async function spoolEvents(home: string, events: MemoryEvent[]) {
+  events = events.filter((event) => !isMemoryData(event.content));
   if (!events.length || process.env.UMEM_WORKER === "1") return;
   await initHome(home);
   await atomicWrite(

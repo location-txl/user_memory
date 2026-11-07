@@ -10,6 +10,8 @@ export default {
   error_PROJECT_NOT_FOUND: "项目不存在。",
   error_PROJECT_ALREADY_BOUND: "目录已绑定到另一个项目。",
   error_MEMORY_NOT_FOUND: "记忆不存在，或记忆文件无效。",
+  error_EVIDENCE_NOT_FOUND:
+    "证据未采集、已撤回或不属于当前项目；可查看记忆中保留的来源摘录。",
   error_MEMORY_CONFLICT: "记忆已改变，请重新读取后再编辑。",
   error_MEMORY_WITHDRAWN: "记忆已撤回，如需重新记住，请新建记录。",
   error_WORKER_UNAVAILABLE: "提炼服务未运行。",
@@ -35,7 +37,8 @@ export default {
   localService: "本机服务",
   refresh: "刷新",
   reconnect: "重新连接",
-  automaticProjectRegistration: "工具在项目中使用记忆时，会自动登记项目。",
+  automaticProjectRegistration:
+    "会话召回、采集消息或保存项目记忆时，会自动登记项目。",
   reviewQueueDescription: "证据尚不充分，确认后才会出现在召回中。",
   projectMemoriesDescription: "仅在这个项目及其关联目录中使用。",
   globalMemoriesDescription: "跨项目共享的偏好与约定，所有接入工具都能读取。",

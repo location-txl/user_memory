@@ -17,6 +17,9 @@ test("CLI help is English regardless of browser language", async () => {
     ["setup"],
     ["service"],
     ["memory"],
+    ["evidence"],
+    ["evidence", "search"],
+    ["evidence", "get"],
     ["import"],
     ["export"],
   ]) {

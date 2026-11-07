@@ -33,6 +33,8 @@ Follow existing two-space indentation, double quotes, semicolons, and ESM import
 
 Name Vitest files `*.test.ts`. Reuse `tests/backend/fixtures.ts` for temporary homes and real Markdown/SQLite storage. Isolate model calls, host configuration, and system commands; never read personal memory or credentials. Cover changed behavior and regressions. No numeric coverage threshold is configured. PR CI runs type checking, Vitest, and Hermes tests.
 
+Memory and evidence responses must retain the historical-data marker so capture cannot treat them as new evidence. Verify read-only project lookup, redaction of existing data at output boundaries, and recovery of missing event indexes. Performance tests must keep the service and timeout-owning client in separate processes.
+
 ## Commit & Pull Request Guidelines
 
 History uses Conventional Commits, including `fix(hooks):`, `feat(web):`, `test:`, and `feat(cli)!:` for breaking changes, often with Chinese descriptions. PRs should explain behavior changes, link relevant issues, report validation, and include screenshots for UI changes. Document configuration or compatibility changes. Never commit tokens or personal data. Agents must obtain explicit Git instructions before mutating repository state or history.

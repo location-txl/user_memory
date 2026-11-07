@@ -36,7 +36,15 @@ export class MemoryClient {
         options.body === undefined ? undefined : JSON.stringify(options.body),
       signal: AbortSignal.timeout(this.timeout),
     });
-    const data = (await response.json()) as T & Partial<ErrorResponse>;
+    const data = (await response.json().catch(() => {
+      throw new ClientError(
+        response.status,
+        "INVALID_RESPONSE",
+        response.ok
+          ? "Service returned invalid JSON."
+          : `HTTP ${response.status} ${response.statusText}`.trim(),
+      );
+    })) as T & Partial<ErrorResponse>;
     if (!response.ok)
       throw new ClientError(
         response.status,

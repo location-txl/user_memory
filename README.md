@@ -196,6 +196,10 @@ umem memory forget <id>
 # 看当前项目实际会得到哪些记忆
 umem recall '构建方式' --cwd /绝对路径/项目
 
+# 核对已采集的原话或工具结果
+umem evidence search '构建约束' --cwd /绝对路径/项目
+umem evidence get '<source-id>' --cwd /绝对路径/项目
+
 # 将另一个目录绑定到相同项目
 umem project list
 umem project bind /另一个目录 --to <project-id>
@@ -209,7 +213,17 @@ umem jobs --retry <job-id>
 
 「设置与任务」显示按请求模型汇总的提炼次数、输入、缓存输入、输出和总 token。界面用 K、M、B 简写较大的 token 数，悬停可查看原值。缓存输入已包含在输入 token 中，总量按输入加输出计算。`umem jobs` 可查看近期任务的分模型明细。分批和重试会累加，失败也会保留 Codex 已上报的用量。模型留空的调用归入「Codex 默认（模型未上报）」，未上报用量会单独标记。统计从升级后开始记录，使用支持 `codex exec --json` 的 Codex CLI。
 
-MCP 提供 `memory_search`、`memory_get`、`memory_remember`、`memory_correct`、`memory_forget`。纠正和撤回必须带上最近读到的 revision 与 etag，避免旧会话覆盖新内容。检索返回摘录，完整内容用 `memory_get` 读取。
+MCP 提供 `memory_search`、`memory_get`、`memory_remember`、`memory_correct`、`memory_forget`，以及只读的 `memory_evidence_search`、`memory_evidence_get`。纠正和撤回必须带上最近读到的 revision 与 etag，避免旧会话覆盖新内容。记忆检索返回摘录，完整内容用 `memory_get` 读取。
+
+需要核对记忆的原话时，将 `memory_get` 返回的 `sources[].id` 传给 `memory_evidence_get`，并携带当前 `cwd` 或 `projectId`。不知道来源 ID 时可先用 `memory_evidence_search` 搜索，返回最多 12 条、每条最多 1200 字符的摘录，附来源角色、时间、会话和是否截断。可用 `agent` 与 `sessionId` 缩小搜索范围；CLI 对应 `--agent` 与 `--session`。
+
+证据搜索仅查询已进入本服务的事件，范围为全局和当前项目；没有项目上下文时只查全局。查询只解析已登记的项目，不会把未绑定的父目录登记为项目；会话召回、采集消息、显式保存项目记忆和 `project bind` 仍可登记新项目。全局记忆引用了项目事件，也不会扩大原始事件的可读范围。记忆撤回后，其来源事件不再通过证据接口返回，原记录仍保留用于审计。每次启动会分批补齐未进入 FTS5 的事件，包括旧版写入造成的索引缺口，不重跑提炼或修改记忆正文。
+
+记忆、证据及导入预览/确认返回的 JSON 带有 `_memoryContext` 历史资料标记。CLI/MCP 保留该标记，采集和提炼入口排除这些返回内容，避免读出的旧记忆被重新当作工具证据。已识别的 JSON 凭据字段（包括转义后嵌套在工具输出字符串中的 OAuth 字段）在入库、证据读出及发送给提炼器前隐去；旧事件也会在出口重新处理。
+
+HTTP 证据接口使用 `POST /v1/evidence/search`（`query`、可选 `projectId`、`agent`、`sessionId`）和 `POST /v1/evidence/get`（`id`、可选 `projectId`），参数放在 JSON 请求体中；不再使用此前的 GET 证据路由。这样长中文查询和包含 `.`、`..` 或路径字符的来源 ID 都可原样传递。`POST /v1/context` 默认只解析项目，只有显式指定 `create: true` 才登记项目。
+
+“完整事件”指本服务已采集的内容，不等于完整宿主会话：上游采集可能已经截断，导入或手工记忆也可能只有来源摘录。未采集、已撤回或越界时会明确返回不可用，不自动打开来源文件或扫描宿主历史。原话、助手陈述和工具输出仍须按角色、时间及适用条件判断，不能直接视为当前事实。
 
 ## 导入已有记忆
 
@@ -314,7 +328,8 @@ onMessage(event):
 workerTick():
   ingestSpoolWithEventDeduplication()
   job = claimNextIdleSessionJob()
-  proposals = codex.extract(job.events, relatedActiveMemoriesWithSourceExcerpts)
+  evidence = loadCapturedSources(relatedActiveMemories, project, budget = 48000)
+  proposals = codex.extract(job.events, relatedActiveMemoriesWithSourceExcerpts, evidence)
   for proposal in proposals:
     verifySourceIdsAndProjectScope(proposal)
     if sourceWasWithdrawn(proposal): continue
@@ -336,7 +351,7 @@ recall(session, project, query):
 
 - 召回先为版本通知和记忆索引预留空间，再按优先顺序填入完整短正文。正文超过 1600 字符或剩余预算不足时，仅注入标题、ID 和 `memory_get` 读取提示，避免截断后遗漏限定条件。返回的 `memories[].delivery` 区分 `full` 与 `index`；没有列出的内容仍可用 `memory_search` 搜索。
 - 完整注入文本（包括说明、分隔符和版本通知）限制为 6000 个 JavaScript 字符单位，不是模型 token 数。超预算的版本变更保留旧回执，在后续召回继续通知；仅收到新版索引时，旧正文也已失效，使用前须读取新版。
-- 后台提炼同时比较新事件与旧记忆的来源、时间和适用条件。旧来源最多携带最近三条、每条 1000 字符，并标记是否截断；这只是核对线索，不代表已经回查完整会话。新提案仍必须引用本批真实事件。
+- 后台提炼同时比较新事件与旧记忆的来源、时间和适用条件。每条旧记忆最多携带最近三条来源摘要、每条 1000 字符，并标记是否截断；同时按来源 ID 回查当前范围内的已采集事件。旧事件去重后完整装入，序列化事件数组最多 48000 个 JavaScript 字符单位；放不下时省略整条并标记 `omittedSourceIds`，不可用的标记 `unavailableSourceIds`，两者都不证明旧记忆有误。该预算会增加单次提炼的输入量，不是模型 token 数，也不等于完整会话回查。旧证据只用于核对，新提案仍必须引用本批真实事件。
 - 保存指引强调可复用的方法、验证过程和适用条件，兼顾成功经验与失败教训，避免保存可直接查询的实时状态。是否值得保存仍由模型判断，不新增自动过期或定时重写全部记忆的任务。
 
 同一个 Git 仓库的不同 worktree 使用 `git --git-common-dir` 归属同一项目；非 Git 项目按已登记目录匹配，也可以手动绑定别名。项目划分是相关性边界，不是不同本机用户之间的权限隔离。
