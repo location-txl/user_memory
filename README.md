@@ -314,7 +314,7 @@ onMessage(event):
 workerTick():
   ingestSpoolWithEventDeduplication()
   job = claimNextIdleSessionJob()
-  proposals = codex.extract(job.events, relatedActiveMemories)
+  proposals = codex.extract(job.events, relatedActiveMemoriesWithSourceExcerpts)
   for proposal in proposals:
     verifySourceIdsAndProjectScope(proposal)
     if sourceWasWithdrawn(proposal): continue
@@ -325,8 +325,19 @@ workerTick():
 
 recall(session, project, query):
   candidates = globalMemories + currentProjectMemories
-  return versionChanges + boundedRelevantExcerpts(candidates, query)
+  entries = versionChanges + relevantMemories(candidates, query) + stablePreferences
+  reserveIndexesWithinContextBudget(entries)
+  fillCompleteShortBodiesWithRemainingBudget(entries)
+  acknowledgeOnlyDeliveredVersions(entries)
+  return contextWithin6000Characters(entries)
 ```
+
+参考 Anthropic 的 [The components of agent memory](https://www.anthropic.com/research/components-of-agent-memory)，这里将注入上下文作为小型入口，完整 Markdown 与采集证据继续承担详细信息的保存：
+
+- 召回先为版本通知和记忆索引预留空间，再按优先顺序填入完整短正文。正文超过 1600 字符或剩余预算不足时，仅注入标题、ID 和 `memory_get` 读取提示，避免截断后遗漏限定条件。返回的 `memories[].delivery` 区分 `full` 与 `index`；没有列出的内容仍可用 `memory_search` 搜索。
+- 完整注入文本（包括说明、分隔符和版本通知）限制为 6000 个 JavaScript 字符单位，不是模型 token 数。超预算的版本变更保留旧回执，在后续召回继续通知；仅收到新版索引时，旧正文也已失效，使用前须读取新版。
+- 后台提炼同时比较新事件与旧记忆的来源、时间和适用条件。旧来源最多携带最近三条、每条 1000 字符，并标记是否截断；这只是核对线索，不代表已经回查完整会话。新提案仍必须引用本批真实事件。
+- 保存指引强调可复用的方法、验证过程和适用条件，兼顾成功经验与失败教训，避免保存可直接查询的实时状态。是否值得保存仍由模型判断，不新增自动过期或定时重写全部记忆的任务。
 
 同一个 Git 仓库的不同 worktree 使用 `git --git-common-dir` 归属同一项目；非 Git 项目按已登记目录匹配，也可以手动绑定别名。项目划分是相关性边界，不是不同本机用户之间的权限隔离。
 
@@ -337,7 +348,7 @@ recall(session, project, query):
 ## 边界与验收
 
 - 自动保存依赖模型判断，不承诺完美的语义去重或矛盾识别。失败任务保留，可重试；不确定内容进入候选。
-- 搜索使用 SQLite FTS5 和中文分词，是关键词检索，不是向量语义搜索。每次注入正文预算约 6000 字符，长记录给出摘录和完整读取提示。
+- 搜索使用 SQLite FTS5 和中文分词，是关键词检索，不是向量语义搜索。每次完整注入预算为 6000 个 JavaScript 字符单位，长记录给出索引和完整读取提示。
 - DeepSeek 目前只自动采集真实用户消息，不解码 assistant 紧凑事件流。Hermes 不自动采集 subagent、cron 或 bot 发言。
 - 暂不追溯宿主分支回退造成的历史证据变化。已经生效但后来不再适用的记忆，需要显式纠正或撤回。
 - 本版提供六种适配器和安装配方；真实桌面 / CLI 宿主的加载、信任和模型使用情况，需要按各自版本验收。

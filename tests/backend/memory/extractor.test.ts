@@ -6,7 +6,7 @@ import { PassThrough } from "node:stream";
 import { afterEach, expect, vi } from "vitest";
 import { test } from "../fixtures.js";
 import { ConfigSchema, initHome } from "../../../src/config.js";
-import { EventSchema } from "../../../src/contracts.js";
+import { CreateMemorySchema, EventSchema } from "../../../src/contracts.js";
 import { MemoryStore } from "../../../src/memory/store.js";
 import { codexExtractor, MemoryWorker } from "../../../src/memory/worker.js";
 
@@ -214,4 +214,69 @@ test("分批用量在失败、换模型重试和重启后仍可区分零值与�
   } finally {
     reopened.close();
   }
+});
+
+test("提炼输入携带旧记忆的范围和来源，明确标记不完整证据", async ({
+  home,
+  store,
+}) => {
+  const sources = Array.from({ length: 4 }, (_, i) => ({
+    id: `old-${i}`,
+    agent: "codex" as const,
+    role: "user" as const,
+    at: `2026-11-0${i + 1}T00:00:00Z`,
+    excerpt: i === 3 ? "旧证据".repeat(500) : `原始条件 ${i}`,
+  }));
+  const memory = await store.create(
+    CreateMemorySchema.parse({
+      title: "构建约束",
+      content: "仅在 CI 执行完整构建",
+      scope: "global",
+      sources,
+      reason: "用户指定适用范围",
+    }),
+  );
+  let sent = "";
+  const child = childProcess();
+  child.stdin.on("data", (chunk) => {
+    sent += chunk.toString();
+  });
+  vi.mocked(spawn).mockImplementation(() => {
+    child.stdin.once("finish", () => {
+      void writeFile(
+        join(home, "worker", "result.json"),
+        '{"proposals":[]}',
+      ).then(
+        () => child.emit("close", 0),
+        (error) => child.emit("error", error),
+      );
+    });
+    return child as unknown as ReturnType<typeof spawn>;
+  });
+  await codexExtractor(home, config)(
+    [],
+    [memory, { ...memory, sources: [sources[0]] }],
+  );
+  const payload = JSON.parse(sent.slice(sent.indexOf('{"events":')));
+  expect(payload.events).toEqual([]);
+  expect(payload.existing[0]).toMatchObject({
+    id: memory.id,
+    revision: 1,
+    title: memory.title,
+    scope: "global",
+    reason: memory.reason,
+    updatedAt: memory.updatedAt,
+    sourceCount: 4,
+    sourcesTruncated: true,
+    sources: [
+      sources[1],
+      sources[2],
+      { ...sources[3], excerpt: sources[3].excerpt.slice(0, 1000) },
+    ],
+  });
+  expect(payload.existing[1]).toMatchObject({
+    sourceCount: 1,
+    sourcesTruncated: false,
+    sources: [sources[0]],
+  });
 });

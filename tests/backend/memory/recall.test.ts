@@ -8,12 +8,13 @@ import { recall } from "../../../src/memory/recall.js";
 const input = (content = "默认用中文沟通") =>
   CreateMemorySchema.parse({ title: "沟通语言", content, scope: "global" });
 describe("范围、召回与撤回", () => {
-  test("长记忆有摘录和完整读取提示，不会因超预算完全消失", async ({
+  test("长记忆只提供索引和完整读取提示，避免遗漏末尾条件", async ({
     store,
   }) => {
     const m = await store.create(input("很长的偏好说明。".repeat(1000)));
     const result = await recall(store, RecallSchema.parse({}));
-    expect(result.memories[0].id).toBe(m.id);
+    expect(result.memories[0]).toMatchObject({ id: m.id, delivery: "index" });
+    expect(result.context).not.toContain("很长的偏好说明");
     expect(result.context).toContain("memory_get");
     expect(result.context.length).toBeLessThan(6000);
   });
@@ -77,7 +78,9 @@ describe("范围、召回与撤回", () => {
     expect(withdrawn.context).not.toContain("粤语");
     expect((await recall(store, request)).changes).toEqual([]);
   });
-  test("四条在原有预算内的记忆更新会一并附上新版正文", async ({ store }) => {
+  test("集中更新保留所有索引，并将完整上下文限制在预算内", async ({
+    store,
+  }) => {
     const request = RecallSchema.parse({ sessionId: "budget" });
     const records = [];
     for (let i = 0; i < 4; i++) {
@@ -94,10 +97,13 @@ describe("范围、召回与撤回", () => {
     }
     const updated = await recall(store, request);
     expect(updated.memories).toHaveLength(4);
+    expect(updated.context.length).toBeLessThanOrEqual(6000);
+    expect(updated.memories.some((m) => m.delivery === "index")).toBe(true);
+    expect((await recall(store, request)).changes).toEqual([]);
     for (const record of records) {
       expect(updated.context).toContain(`【${record.id} r2，全局】`);
       expect(updated.changes).toContain(
-        `记忆 ${record.id} 已更新，以下新版本替代此前版本。`,
+        `记忆 ${record.id} 已更新，此前版本已失效。以下若仅有索引，须先用 memory_get 读取新版。`,
       );
     }
   });
@@ -172,4 +178,89 @@ test("纠正与撤回通知只发给收到旧版的 Agent、会话和项目组�
   for (const request of unseen) {
     expect((await recall(store, request)).changes).toEqual([]);
   }
+});
+
+test("长正文不会挤掉其他偏好，索引不包含未经完整读取的正文", async ({
+  store,
+}) => {
+  const ids = [];
+  for (let i = 0; i < 12; i++) {
+    const m = await store.create({
+      ...input(`${i} ${"详细规则".repeat(600)} 仅适用于演练环境`),
+      title: `规则 ${i}`,
+    });
+    ids.push(m.id);
+  }
+  const result = await recall(store, RecallSchema.parse({}));
+  expect(result.context.length).toBeLessThanOrEqual(6000);
+  expect(result.memories.map((m) => m.id).sort()).toEqual(ids.sort());
+  expect(result.memories.every((m) => m.delivery === "index")).toBe(true);
+  expect(result.context).not.toContain("详细规则");
+});
+
+test("超预算的撤回通知不会被提前确认，下次召回继续发送", async ({ store }) => {
+  const previous = Object.fromEntries(
+    Array.from({ length: 100 }, (_, i) => [
+      `removed-${i}-${"x".repeat(60)}`,
+      "old-etag",
+    ]),
+  );
+  store.db
+    .prepare("INSERT INTO recalls VALUES (?, ?)")
+    .run("manual:withdrawals:global", JSON.stringify(previous));
+  const request = RecallSchema.parse({ sessionId: "withdrawals" });
+  const delivered = new Set<string>();
+  for (let i = 0; i < 4; i++) {
+    const result = await recall(store, request);
+    expect(result.context.length).toBeLessThanOrEqual(6000);
+    if (i === 0) expect(result.changes.length).toBeLessThan(100);
+    for (const change of result.changes) {
+      expect(delivered.has(change)).toBe(false);
+      delivered.add(change);
+    }
+  }
+  expect(delivered.size).toBe(100);
+  expect((await recall(store, request)).changes).toEqual([]);
+});
+
+test("空白查询不会把不相关的决策注入上下文", async ({ store }) => {
+  await store.create({ ...input("部署决策"), kind: "decision" });
+  expect(
+    (await recall(store, RecallSchema.parse({ query: "  " }))).context,
+  ).toBe("");
+});
+
+test("大量更新分批通知，每条都失效旧正文且不丢失后续更新", async ({
+  store,
+}) => {
+  const previous: Record<string, string> = {};
+  for (let i = 0; i < 30; i++) {
+    const m = await store.create({
+      ...input(`${i} ${"新版条件".repeat(500)}`),
+      title: `${i} ${"条件".repeat(70)}`,
+      kind: "decision",
+    });
+    previous[m.id] = "previous-version";
+  }
+  store.db
+    .prepare("INSERT INTO recalls VALUES (?, ?)")
+    .run("manual:updates:global", JSON.stringify(previous));
+  const request = RecallSchema.parse({ sessionId: "updates" });
+  const notified = new Set<string>();
+  for (let i = 0; i < 4; i++) {
+    const result = await recall(store, request);
+    expect(result.context.length).toBeLessThanOrEqual(6000);
+    expect(result.changes).toHaveLength(result.memories.length);
+    if (i === 0) expect(result.memories.length).toBeLessThan(30);
+    for (const m of result.memories) {
+      expect(notified.has(m.id)).toBe(false);
+      expect(m.delivery).toBe("index");
+      expect(result.changes).toContainEqual(
+        expect.stringContaining(`记忆 ${m.id} 已更新，此前版本已失效`),
+      );
+      notified.add(m.id);
+    }
+  }
+  expect(notified.size).toBe(30);
+  expect((await recall(store, request)).changes).toEqual([]);
 });
