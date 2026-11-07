@@ -1,30 +1,47 @@
 name: 后端回归
 
-on: pull_request
+on:
+  pull_request:
+    paths-ignore:
+      - README.md
+      - "docs/**"
+  push:
+    branches: [main]
+    paths-ignore:
+      - README.md
+      - "docs/**"
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('backend-pr-{0}', github.event.pull_request.number) || format('backend-run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
   backend:
-    name: 后端检查
+    name: ${{ github.event_name == 'pull_request' && '后端检查' || format('后端检查 ({0})', matrix.commit) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # A push event covers a batch, but each pushed revision needs its own regression check.
+        commit: ${{ github.event_name == 'push' && github.event.commits.*.id || fromJSON(format('["{0}"]', github.sha)) }}
     steps:
       - name: 获取代码
         uses: actions/checkout@v7
         with:
+          ref: ${{ matrix.commit }}
           persist-credentials: false
+      - name: 设置 pnpm
+        uses: pnpm/action-setup@v6
       - name: 设置 Node.js
         uses: actions/setup-node@v7
         with:
           node-version: "24"
-      - name: 设置 pnpm
-        uses: pnpm/action-setup@v6
-      - name: 设置 Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
       - name: 类型检查
