@@ -25,7 +25,9 @@
 
 ## GitHub Actions
 
-`后端回归` 在 Ubuntu 上执行类型检查、全部 Vitest 测试和 Hermes 测试。它按 `pnpm-lock.yaml` 缓存 pnpm store。只改 `README.md` 或 `docs/` 的 PR 和 `main` 推送会跳过该工作流。PR 使用相对于目标分支的变更范围，同一个 PR 的新运行会取消旧运行。
+`后端回归` 在 Ubuntu 24.04 上执行类型检查、全部 Vitest 测试和 Hermes 测试。它使用镜像自带的 Corepack 和 Python 3.12，按 `pnpm-lock.yaml` 缓存 pnpm store。
+
+只改 `README.md` 或 `docs/` 的 PR 和 `main` 推送会跳过该工作流。PR 使用相对于目标分支的变更范围，同一个 PR 的新运行会取消旧运行。
 
 `main` 的代码推送会并行检查这次推送包含的每个提交。各次推送独立运行，同一批中某个提交失败也不会取消其他提交。GitHub Actions 每次运行最多生成 256 个矩阵任务，超过这个数量的提交需分批推送。
 
