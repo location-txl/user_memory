@@ -26,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # A push event covers a batch, but each pushed revision needs its own regression check.
+        # 一次 push 可能带多个提交，每个提交都单独跑回归。
         commit: ${{ github.event_name == 'push' && github.event.commits.*.id || fromJSON(format('["{0}"]', github.sha)) }}
     steps:
       - name: 获取代码
@@ -35,7 +35,10 @@ jobs:
           ref: ${{ matrix.commit }}
           persist-credentials: false
       - name: 设置 pnpm
-        uses: pnpm/action-setup@v6
+        run: |
+          mkdir -p "$RUNNER_TEMP/pnpm-bin"
+          corepack enable --install-directory "$RUNNER_TEMP/pnpm-bin" pnpm
+          echo "$RUNNER_TEMP/pnpm-bin" >> "$GITHUB_PATH"
       - name: 设置 Node.js
         uses: actions/setup-node@v7
         with:
@@ -43,7 +46,10 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - name: 安装依赖
-        run: pnpm install --frozen-lockfile
+        run: |
+          # better-sqlite3 冷启动编译时使用已安装的同版本 Node.js 头文件。
+          export npm_config_nodedir="$(dirname "$(dirname "$(command -v node)")")"
+          pnpm install --frozen-lockfile
       - name: 类型检查
         run: pnpm typecheck
       - name: TypeScript 测试
