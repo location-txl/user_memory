@@ -102,3 +102,10 @@ Hermes provider 的测试替换了宿主 ABC，不等同于实际 Gateway 加载
 - 本机 Hermes 源码的 `agent/memory_provider.py`、`agent/agent_init.py`、`hermes_cli/plugins.py`：provider 生命周期、profile 实例边界与 `cwd` 的真实传入路径。
 
 这些实现细节会随宿主版本变化。安装器不会绕过宿主自己的 hook 信任，也不会把“服务收到了请求”标成“模型已正确使用记忆”。
+
+## 审查修复回归
+
+- `review-api.test.ts` 验证 PATCH 未提交字段不变（包括暂停自动提炼），以及真实 HTTP 上长中文 JSON 搜索和 16000 字符上限。记忆搜索客户端使用 `POST /v1/memories/search`，旧 GET 列表接口保留兼容。
+- 项目/任务回归覆盖独立 Git 仓库、最长实际匹配别名、迟到事件、恢复 checkpoint 与提炼输入预算。迟到事件触发同轮重新复盘，可能产生额外模型调用；已有提案去重和纠正版本检查仍然生效。
+- 读取投影回归覆盖旧 Markdown 的详情、搜索、召回、历史及原始 etag；Hermes 回归覆盖嵌套 JSON 在截断前脱敏。
+- 旧全局来源仅在原事件仍存在且可确认属于项目时移除摘录、会话及路径。缺失原事件的历史来源无法可靠还原原项目归属，保留兼容，升级前仍应审核与备份旧数据。这不是对任意未知凭据的完整检测保证。

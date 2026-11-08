@@ -196,7 +196,10 @@ test("MCP 调用记录区分各状态，搜索只记录数量和字节", async (
   const searchFinished = deferred();
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const request = new Request(input, init);
-    if (new URL(request.url).searchParams.get("q") !== "cancel-this")
+    if (
+      new URL(request.url).pathname !== "/v1/memories/search" ||
+      (await request.clone().json()).query !== "cancel-this"
+    )
       return app.request(request);
     searchStarted.resolve();
     await releaseSearch.promise;

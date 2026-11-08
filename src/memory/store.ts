@@ -64,6 +64,8 @@ type MemoryChanges = Partial<
 export const legacyCorrectionReason = "旧记忆已变化或证据不确定，请审核。";
 export type ExtractionReview = {
   inputEventIds: string[];
+  // Full capture snapshot, including events omitted by the prompt budget.
+  capturedEventIds?: string[];
   contextEventIds: string[];
   promptHash: string;
   version: string;
@@ -93,6 +95,8 @@ export class MemoryStore {
   errors: string[] = [];
   projects: Project[] = [];
   private signatures = new Map<string, string>();
+  private sourceVersion = 0;
+  private refreshedSourceVersion = -1;
   private tail: Promise<unknown> = Promise.resolve();
   private refreshTail: Promise<unknown> = Promise.resolve();
 
@@ -194,7 +198,25 @@ export class MemoryStore {
       `${memory.id}.md`,
     );
   }
-  private async refreshFiles(force: boolean) {
+  private decodeStoredMemory(raw: string, file: string): Memory {
+    const memory = decodeMemory(raw, file);
+    if (memory.scope !== "global") return memory;
+    const lookup = this.db.prepare("SELECT project_id FROM events WHERE id=?");
+    memory.sources = memory.sources.map((source) => {
+      const event = lookup.get(source.id) as
+        { project_id: string | null } | undefined;
+      // Old global memories copied project excerpts. Preserve the citation
+      // without exposing project-only text or session metadata globally.
+      if (event?.project_id) {
+        const { sessionId: _session, path: _path, ...citation } = source;
+        return { ...citation, excerpt: "" };
+      }
+      return source;
+    });
+    return memory;
+  }
+  private async refreshFiles(force: boolean): Promise<void> {
+    const sourceVersion = this.sourceVersion;
     const dir = join(this.home, "memories");
     const directories = [
       "global",
@@ -221,6 +243,7 @@ export class MemoryStore {
     }
     if (
       !force &&
+      this.refreshedSourceVersion === this.sourceVersion &&
       signatures.size === this.signatures.size &&
       [...signatures].every(([f, s]) => this.signatures.get(f) === s)
     )
@@ -229,7 +252,7 @@ export class MemoryStore {
     const errors: string[] = [];
     for (const file of files) {
       try {
-        const memory = decodeMemory(
+        const memory = this.decodeStoredMemory(
           await readFile(join(dir, file), "utf8"),
           join(dir, file),
         );
@@ -249,6 +272,9 @@ export class MemoryStore {
         errors.push(e instanceof Error ? e.message : String(e));
       }
     }
+    // A source captured while reading files can change an earlier projection.
+    // Re-read before returning this snapshot, not only on the next request.
+    if (sourceVersion !== this.sourceVersion) return this.refreshFiles(true);
     this.db.transaction(() => {
       this.db.exec("DELETE FROM memory_index; DELETE FROM memory_fts;");
       const insert = this.db.prepare("INSERT INTO memory_index VALUES (?, ?)");
@@ -264,6 +290,7 @@ export class MemoryStore {
     this.memories.clear();
     for (const [id, m] of next) this.memories.set(id, m);
     this.signatures = signatures;
+    this.refreshedSourceVersion = sourceVersion;
     this.errors = errors;
   }
   requireProject(projectId?: string) {
@@ -299,19 +326,25 @@ export class MemoryStore {
     } catch {
       /* 非 Git 目录使用已登记的根目录。 */
     }
+    const matchingRootLength = (project: Project) =>
+      Math.max(
+        0,
+        ...project.roots
+          .filter(
+            (r) =>
+              (absolute === r || absolute.startsWith(`${r}/`)) &&
+              // A containing workspace is not the identity of a nested Git repo.
+              (!gitCommonDir || r === root || r.startsWith(`${root}/`)),
+          )
+          .map((r) => r.length),
+      );
     const known =
       this.projects.find(
         (p) => gitCommonDir && p.gitCommonDir === gitCommonDir,
       ) ??
       this.projects
-        .filter((p) =>
-          p.roots.some((r) => absolute === r || absolute.startsWith(`${r}/`)),
-        )
-        .sort(
-          (a, b) =>
-            Math.max(...b.roots.map((r) => r.length)) -
-            Math.max(...a.roots.map((r) => r.length)),
-        )[0];
+        .filter((p) => matchingRootLength(p) > 0)
+        .sort((a, b) => matchingRootLength(b) - matchingRootLength(a))[0];
     if (known || !create) return known;
     return this.addProject(root, undefined, undefined, gitCommonDir);
   }
@@ -548,13 +581,17 @@ export class MemoryStore {
       if (e.code === "ENOENT") return [];
       throw e;
     });
-    return Promise.all(
-      files
-        .filter((f) => f.endsWith(".md"))
-        .sort()
-        .map(async (f) =>
-          decodeMemory(await readFile(join(dir, f), "utf8"), join(dir, f)),
-        ),
+    const paths = files
+      .filter((f) => f.endsWith(".md"))
+      .sort()
+      .map((f) => join(dir, f));
+    const contents = await Promise.all(
+      paths.map((file) => readFile(file, "utf8")),
+    );
+    // Project source bindings can arrive while files are being read. Project
+    // every revision synchronously against the same current event state.
+    return contents.map((raw, index) =>
+      this.decodeStoredMemory(raw, paths[index]),
     );
   }
   async ingestBatch(batch: z.infer<typeof IngestSchema>) {
@@ -570,7 +607,7 @@ export class MemoryStore {
     this.db.transaction(() => {
       const now = new Date().toISOString();
       const lookup = this.db.prepare(
-        "SELECT id FROM jobs WHERE agent=? AND session_id=? AND project_id IS ? AND turn_id=?",
+        "SELECT id, state FROM jobs WHERE agent=? AND session_id=? AND project_id IS ? AND turn_id=?",
       );
       if (turnEnd) {
         this.requireProject(turnEnd.projectId);
@@ -625,18 +662,28 @@ export class MemoryStore {
           event.sessionId,
           event.projectId ?? null,
           event.turnId,
-        ) as { id: number } | undefined;
+        ) as { id: number; state: string } | undefined;
         if (!job) continue;
         this.db
           .prepare("UPDATE events SET job_id=? WHERE id=?")
           .run(job.id, event.id);
+        if (job.state === "done" || job.state === "skipped") {
+          this.db
+            .prepare("DELETE FROM extraction_reviews WHERE job_id=?")
+            .run(job.id);
+          this.db
+            .prepare("UPDATE jobs SET state='pending',error=NULL WHERE id=?")
+            .run(job.id);
+        }
+        // Running/failed reviews keep their checkpoint. The worker completes it
+        // before scheduling another review for any evidence that arrived late.
         this.db
-          .prepare(
-            "UPDATE jobs SET updated_at=? WHERE id=? AND state='pending'",
-          )
+          .prepare("UPDATE jobs SET updated_at=? WHERE id=?")
           .run(now, job.id);
       }
     })();
+    // Source projections depend on newly captured event scope as well as files.
+    if (added) this.sourceVersion++;
     return added;
   }
   recordExtractionUsage(

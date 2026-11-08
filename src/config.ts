@@ -11,14 +11,26 @@ import {
 import { randomUUID, randomBytes } from "node:crypto";
 import { z } from "zod";
 
-export const ConfigSchema = z.object({
-  port: z.number().int().min(1024).max(65535).default(43123),
-  codexPath: z.string().default("codex"),
+const ConfigFields = {
+  port: z.number().int().min(1024).max(65535),
+  codexPath: z.string(),
   model: z.string().optional(),
-  extractionEnabled: z.boolean().default(true),
-  idleSeconds: z.number().int().min(0).default(30),
-  workerTimeoutSeconds: z.number().int().min(1).default(180),
+  extractionEnabled: z.boolean(),
+  idleSeconds: z.number().int().min(0),
+  workerTimeoutSeconds: z.number().int().min(1),
+};
+export const ConfigSchema = z.object({
+  ...ConfigFields,
+  port: ConfigFields.port.default(43123),
+  codexPath: ConfigFields.codexPath.default("codex"),
+  extractionEnabled: ConfigFields.extractionEnabled.default(true),
+  idleSeconds: ConfigFields.idleSeconds.default(30),
+  workerTimeoutSeconds: ConfigFields.workerTimeoutSeconds.default(180),
 });
+export const ConfigPatchSchema = z
+  .object(ConfigFields)
+  .omit({ port: true })
+  .partial();
 export type Config = z.infer<typeof ConfigSchema>;
 const defaultMemoryHome = () => resolve(homedir(), ".umem");
 

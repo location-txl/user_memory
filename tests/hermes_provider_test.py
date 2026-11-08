@@ -67,6 +67,28 @@ class ProviderTest(unittest.TestCase):
         provider.sync_turn("secret=abcde sk-abcdefghijklmnopqr", "收到")
         self.assertNotIn("abcde", json.dumps(self.events()))
 
+    def test_json_credentials_redacted_before_long_capture_is_truncated(self):
+        provider = self.create()
+        for key in ["access_token", "refresh_token", "id_token", "client_secret", "api_key", "password", "secret"]:
+            secret = "synthetic-invalid-" + key + ' with spaces "and quotes"'
+            inner = json.dumps({key: secret, "padding": "x" * 40000})
+            wrapped = json.dumps({"output": json.dumps({"text": inner})})
+            provider.sync_turn(wrapped, "收到")
+        for event in self.events():
+            self.assertLessEqual(len(event["content"]), 32000)
+            self.assertNotIn("synthetic-invalid-", event["content"])
+        self.assertEqual(len(self.events()), 14)
+
+    def test_redaction_preserves_json_and_is_idempotent(self):
+        raw = json.dumps({"access_token": "synthetic-invalid-token", "message": "保留原文"})
+        wrapped = json.dumps({"output": raw})
+        safe = self.module.scrub(wrapped)
+        self.assertEqual(json.loads(json.loads(safe)["output"]), {
+            "access_token": "[已隐去凭据]", "message": "保留原文",
+        })
+        self.assertEqual(self.module.scrub(safe), safe)
+        self.assertEqual(json.loads(self.module.scrub('{"password":1234}')), {"password": "[已隐去凭据]"})
+
     def test_offline_recall_does_not_prevent_later_capture(self):
         provider = self.create(cwd=str(self.root))
 
