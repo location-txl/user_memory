@@ -4,7 +4,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, expect, vi } from "vitest";
-import { test } from "../fixtures.js";
+import { test, reviewTurn } from "../fixtures.js";
 import { ConfigSchema, initHome } from "../../../src/config.js";
 import { CreateMemorySchema, EventSchema } from "../../../src/contracts.js";
 import { MemoryStore } from "../../../src/memory/store.js";
@@ -46,7 +46,7 @@ test.for([
 ])("子进程成功退出但 $label 时拒绝旧结果", async ({ output }, { home }) => {
   await initHome(home);
   const result = join(home, "worker", "result.json");
-  await writeFile(result, '{"proposals":[]}');
+  await writeFile(result, '{"outcome":"settled","proposals":[]}');
   const child = childProcess();
   const recordUsage = vi.fn();
   vi.mocked(spawn).mockImplementation(() => {
@@ -116,13 +116,14 @@ function usageEvent(input: number, output: number, cached = input) {
   );
 }
 
-test("分批用量在失败、换模型重试和重启后仍可区分零值与未上报", async ({
+test("轮次用量在失败、换模型重试和重启后仍可区分零值与未上报", async ({
   home,
   store,
 }) => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date("2026-11-07T00:00:00Z"));
-  store.ingest(
+  reviewTurn(
+    store,
     [1, 2].map((batch) =>
       EventSchema.parse({
         id: `batch-${batch}`,
@@ -135,10 +136,12 @@ test("分批用量在失败、换模型重试和重启后仍可区分零值与�
     ),
   );
   const results = [
-    { events: usageEvent(80, 10) + usageEvent(100, 20, 40) },
-    { events: usageEvent(200, 30, 120) + usageEvent(-1, 99), fail: true },
+    {
+      events:
+        usageEvent(80, 10) + usageEvent(200, 30, 120) + usageEvent(-1, 99),
+      fail: true,
+    },
     { events: "invalid json\n" + usageEvent(0, 0) },
-    { events: '{"type":"turn.completed"}\n' },
   ];
   vi.mocked(spawn).mockImplementation((_path, args) => {
     expect(args).toContain("--json");
@@ -155,7 +158,7 @@ test("分批用量在失败、换模型重试和重启后仍可区分零值与�
       } else
         void writeFile(
           join(home, "worker", "result.json"),
-          '{"proposals":[]}',
+          '{"outcome":"settled","proposals":[]}',
         ).then(
           () => child.emit("close", 0),
           (error) => child.emit("error", error),
@@ -172,13 +175,13 @@ test("分批用量在失败、换模型重试和重启后仍可区分零值与�
     usageByModel: [
       {
         model: "first-model",
-        calls: 2,
-        reportedCalls: 2,
-        cacheReportedCalls: 2,
-        inputTokens: 300,
-        cachedInputTokens: 160,
-        outputTokens: 50,
-        totalTokens: 350,
+        calls: 1,
+        reportedCalls: 1,
+        cacheReportedCalls: 1,
+        inputTokens: 200,
+        cachedInputTokens: 120,
+        outputTokens: 30,
+        totalTokens: 230,
       },
     ],
   });
@@ -191,8 +194,6 @@ test("分批用量在失败、换模型重试和重启后仍可区分零值与�
     vi.mocked(spawn).mock.calls.map(([, args]) => args?.slice(1, 3)),
   ).toEqual([
     ["--model", "first-model"],
-    ["--model", "first-model"],
-    ["--model", "second-model"],
     ["--model", "second-model"],
   ]);
   store.close();
@@ -202,7 +203,7 @@ test("分批用量在失败、换模型重试和重启后仍可区分零值与�
       ...failed.usageByModel,
       {
         model: "second-model",
-        calls: 2,
+        calls: 1,
         reportedCalls: 1,
         cacheReportedCalls: 1,
         inputTokens: 0,
@@ -245,7 +246,7 @@ test("提炼输入携带旧记忆的范围和来源，明确标记不完整证�
     child.stdin.once("finish", () => {
       void writeFile(
         join(home, "worker", "result.json"),
-        '{"proposals":[]}',
+        '{"outcome":"settled","proposals":[]}',
       ).then(
         () => child.emit("close", 0),
         (error) => child.emit("error", error),
@@ -334,7 +335,7 @@ test.for(["plain", "wrapped"])(
       child.stdin.once("finish", () => {
         void writeFile(
           join(home, "worker", "result.json"),
-          '{"proposals":[]}',
+          '{"outcome":"settled","proposals":[]}',
         ).then(
           () => child.emit("close", 0),
           (error) => child.emit("error", error),

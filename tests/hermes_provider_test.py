@@ -37,7 +37,8 @@ class ProviderTest(unittest.TestCase):
         return provider
 
     def events(self):
-        return [event for file in (self.home / "spool").glob("*.json") for event in json.loads(file.read_text())]
+        batches = [json.loads(file.read_text()) for file in (self.home / "spool").glob("*.json")]
+        return [event for batch in batches for event in (batch["events"] if isinstance(batch, dict) else batch)]
 
     def test_profiles_and_cwd_are_bound_to_instances(self):
         first = self.create("one", cwd=str(self.root))

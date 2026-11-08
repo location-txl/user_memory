@@ -61,7 +61,7 @@ class UserMemoryProvider(MemoryProvider):
             content = re.sub(r"\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,})\b", "[已隐去凭据]", content)
             content = re.sub(r"\b(Bearer\s+)[A-Za-z0-9._~-]{12,}", r"\1[已隐去凭据]", content, flags=re.I)
             content = re.sub(r"((?:api[_-]?key|access[_-]?token|password|secret)\s*[:=]\s*)[^\s,;]+", r"\1[已隐去凭据]", content, flags=re.I)
-            events.append({"id": f"hermes:{session}:{turn}:{role}", "agent": "hermes", "sessionId": session,
+            events.append({"id": f"hermes:{session}:{turn}:{role}", "agent": "hermes", "sessionId": session, "turnId": turn,
                            **({"cwd": self.cwd} if self.cwd else {}), "role": role, "content": content[:32000],
                            "at": datetime.now(timezone.utc).isoformat(), "injected": False, "worker": False})
         if events:
@@ -70,7 +70,14 @@ class UserMemoryProvider(MemoryProvider):
             temporary = directory / f"{turn}.tmp"
             fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, "w") as output:
-                json.dump(events, output, ensure_ascii=False)
+                payload = events
+                if {event["role"] for event in events} == {"user", "assistant"}:
+                    payload = {"events": events, "turnEnd": {
+                        "agent": "hermes", "sessionId": session, "turnId": turn,
+                        "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                        **({"cwd": self.cwd} if self.cwd else {}),
+                    }}
+                json.dump(payload, output, ensure_ascii=False)
             temporary.replace(directory / f"{turn}.json")
 
     def on_session_switch(self, new_session_id, **kwargs):

@@ -81,8 +81,9 @@ export function createMcp(home: string, agent: Agent = "manual") {
     "memory_search",
     {
       description:
-        "搜索有效的全局与当前项目记忆，返回最多 12 条摘录；完整条件使用 memory_get 读取",
+        "当前上下文缺少所需偏好、项目约定或历史决策时搜索；传入当前 cwd 或 projectId。返回最多 12 条摘录，应用截断的结果前先调用 memory_get。",
       inputSchema: { ...context, query: z.string() },
+      annotations: { readOnlyHint: true },
     },
     (input, { requestId }) =>
       result(requestId, async () => {
@@ -91,6 +92,7 @@ export function createMcp(home: string, agent: Agent = "manual") {
           `/memories?${new URLSearchParams({ q: input.query, status: "active", ...(scope.projectId ? { projectId: scope.projectId } : {}) })}`,
         );
         const search = {
+          projectId: scope.projectId ?? null,
           total: memories.length,
           results: memories.slice(0, 12).map((m) => ({
             id: m.id,
@@ -112,19 +114,21 @@ export function createMcp(home: string, agent: Agent = "manual") {
   server.registerTool(
     "memory_get",
     {
-      description: "读取记忆及来源，获得纠正用的 revision 和 etag",
+      description:
+        "Hook 只有索引、搜索摘录被截断或需要来源时读取全文。纠正或撤回前用它取得 revision 和 etag。",
       inputSchema: { ...context, id: Id },
+      annotations: { readOnlyHint: true },
     },
     (input, { requestId }) =>
       result(requestId, async () => {
         const m = await scopedGet(input.id, input);
         return m.status === "withdrawn"
-          ? {
+          ? memoryData({
               id: m.id,
               status: m.status,
               revision: m.revision,
               message: "该记忆已撤回，不得继续使用",
-            }
+            })
           : m;
       }),
   );
@@ -225,17 +229,26 @@ export function createMcp(home: string, agent: Agent = "manual") {
         revision: z.number().int().positive(),
         etag: z.string(),
         content: z.string().min(1).max(16000),
+        sourceId: EvidenceId.optional().describe(
+          "可选，当前用户纠正原话的已采集来源 ID",
+        ),
       },
     },
     (input, { requestId }) =>
       result(requestId, async () => {
-        await scopedGet(input.id, input);
+        const memory = await scopedGet(input.id, input);
+        const sourceProjectId =
+          input.sourceId && !memory.projectId
+            ? (await binding(input)).projectId
+            : undefined;
         return client.request(`/memories/${input.id}`, {
           method: "PATCH",
           body: {
             revision: input.revision,
             etag: input.etag,
             content: input.content,
+            sourceId: input.sourceId,
+            sourceProjectId,
             reason: `由 ${agent} 显式纠正`,
           },
         });
@@ -263,7 +276,7 @@ export function createMcp(home: string, agent: Agent = "manual") {
             status: "withdrawn",
           },
         });
-        return { id: m.id, status: m.status, revision: m.revision };
+        return memoryData({ id: m.id, status: m.status, revision: m.revision });
       }),
   );
   return {

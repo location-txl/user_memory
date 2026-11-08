@@ -85,7 +85,9 @@ export async function planSetup(
     data[key]["user-memory"] = mcp;
   }
   function hooks(events: Record<string, any>, processHook = false) {
-    for (const event of ["SessionStart", "UserPromptSubmit", "Stop"]) {
+    const names = ["SessionStart", "UserPromptSubmit", "Stop"];
+    if (host === "claude") names.push("StopFailure", "SessionEnd");
+    for (const event of names) {
       events[event] ??= [];
       const hook = processHook
         ? {

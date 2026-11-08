@@ -124,13 +124,15 @@ umem doctor
 
 > 请从公共记忆中查找我的验收标记。
 
-核对模型是否调用了公共记忆工具，并在 `umem web` 中检查正文和来源。自动采集另行验证：提交一条明确的长期偏好，等待默认 30 秒空闲期和提炼完成，再通过 `umem jobs`、`umem doctor` 查看任务和采集/召回时间。
+核对模型是否调用了公共记忆工具，并在 `umem web` 中检查正文和来源。自动采集另行验证：提交一条明确的长期偏好，等待该轮回复结束、默认 30 秒收尾缓冲和提炼完成，再通过 `umem jobs`、`umem doctor` 查看任务和采集/召回时间。
 
 只接入一次即可覆盖使用同一套 Codex 用户配置的新会话，无需在每个项目重复安装。项目范围会根据会话目录识别；目录别名可以用 `umem project bind` 登记。
 
 ## 更新或卸载全局命令
 
 更新时，在源码目录重新执行 `pnpm install --frozen-lockfile`、`pnpm build`、`npm pack`，再用 `npm install --global ./新安装包.tgz` 覆盖安装。更新前先停止正在运行的服务，更新后重新启动。`~/.user-memory` 独立于 npm 安装目录，更新不会清空已有数据。
+
+已接入 Claude Code 的用户需要重新执行 `umem setup claude`，然后重启 Claude Code，使新增的 `StopFailure` 和 `SessionEnd` hooks 生效。
 
 卸载时，先撤销已接入工具的配置，再卸载命令：
 
@@ -158,10 +160,10 @@ umem doctor
 | 工具             | 自动采集与召回                                                        | 主动记忆 | 安装结果                                                    |
 | ---------------- | --------------------------------------------------------------------- | -------- | ----------------------------------------------------------- |
 | Codex            | SessionStart / UserPromptSubmit / Stop hooks，增量读取当前 transcript | MCP      | 合并 `.codex/hooks.json` 和 `config.toml` 的 MCP 条目       |
-| ZCode            | hooks 的用户原话与最终回复；召回注入 additionalContext                | MCP      | 合并 `.zcode/cli/config.json`                               |
-| Claude Code      | 提交 hook 与增量 transcript                                           | MCP      | 合并 `.claude/settings.json`、`.claude.json`                |
-| Pi               | before_agent_start / message_end 扩展                                 | MCP      | 安装扩展入口，合并 `.pi/agent/mcp.json`                     |
-| DeepSeek Harness | 原生 Cordis 插件；只采集已提交的真实用户消息                          | MCP      | 生成独立 overlay，按安装结果中的 `dsh web --patch …` 启动   |
+| ZCode            | 按宿主轮次 ID 关联用户原话和最终回复，召回通过 additionalContext 注入 | MCP      | 合并 `.zcode/cli/config.json`                               |
+| Claude Code      | 提交、Stop、StopFailure、SessionEnd hooks 与增量 transcript           | MCP      | 合并 `.claude/settings.json`、`.claude.json`                |
+| Pi               | before_agent_start / message_end / agent_settled 扩展                 | MCP      | 安装扩展入口，合并 `.pi/agent/mcp.json`                     |
+| DeepSeek Harness | 原生 Cordis 插件；采集真实用户输入、助手输出与工具结果                | MCP      | 生成独立 overlay，按安装结果中的 `dsh web --patch …` 启动   |
 | Hermes           | profile 独立的 memory provider，采集已完成轮次                        | MCP      | 准备 provider 与 MCP 片段；手工在目标 profile 选择 provider |
 
 前三种工具需要宿主支持相应 hooks，并完成宿主自身的信任授权。**安装文件存在不等于接入成功。** 在管理页查看最近采集、召回时间，再用两个新会话验证模型真的使用了记忆。桌面应用以它内置的运行时为准，不以系统 CLI 版本代替验收。
@@ -213,13 +215,15 @@ umem jobs --retry <job-id>
 
 「设置与任务」显示按请求模型汇总的提炼次数、输入、缓存输入、输出和总 token。界面用 K、M、B 简写较大的 token 数，悬停可查看原值。缓存输入已包含在输入 token 中，总量按输入加输出计算。`umem jobs` 可查看近期任务的分模型明细。分批和重试会累加，失败也会保留 Codex 已上报的用量。模型留空的调用归入「Codex 默认（模型未上报）」，未上报用量会单独标记。统计从升级后开始记录，使用支持 `codex exec --json` 的 Codex CLI。
 
+自动召回按当前查询匹配全局和当前项目的生效记忆。单个关键词可直接匹配。多词查询会过滤常见任务词，正文需要匹配至少两个关键词，标题匹配可以单独命中。需要每次带上的条目可以在管理页设为常驻，仍受项目范围与上下文预算限制。旧条目默认按需召回。
+
 MCP 提供 `memory_search`、`memory_get`、`memory_remember`、`memory_correct`、`memory_forget`，以及只读的 `memory_evidence_search`、`memory_evidence_get`。纠正和撤回必须带上最近读到的 revision 与 etag，避免旧会话覆盖新内容。记忆检索返回摘录，完整内容用 `memory_get` 读取。
 
 需要核对记忆的原话时，将 `memory_get` 返回的 `sources[].id` 传给 `memory_evidence_get`，并携带当前 `cwd` 或 `projectId`。不知道来源 ID 时可先用 `memory_evidence_search` 搜索，返回最多 12 条、每条最多 1200 字符的摘录，附来源角色、时间、会话和是否截断。可用 `agent` 与 `sessionId` 缩小搜索范围；CLI 对应 `--agent` 与 `--session`。
 
-证据搜索仅查询已进入本服务的事件，范围为全局和当前项目；没有项目上下文时只查全局。查询只解析已登记的项目，不会把未绑定的父目录登记为项目；会话召回、采集消息、显式保存项目记忆和 `project bind` 仍可登记新项目。全局记忆引用了项目事件，也不会扩大原始事件的可读范围。记忆撤回后，其来源事件不再通过证据接口返回，原记录仍保留用于审计。每次启动会分批补齐未进入 FTS5 的事件，包括旧版写入造成的索引缺口，不重跑提炼或修改记忆正文。
+证据搜索仅查询已进入本服务的事件，范围为全局和当前项目；没有项目上下文时只查全局。查询只解析已登记的项目，不会把未绑定的父目录登记为项目；会话召回、采集消息、显式保存项目记忆和 `project bind` 仍可登记新项目。全局记忆新引用的项目事件只保留来源 ID、角色、宿主与时间，原话需在原项目中按 ID 读取。记忆撤回后，其来源事件不再通过证据接口返回，原记录仍保留用于审计。每次启动会分批补齐未进入 FTS5 的事件，包括旧版写入造成的索引缺口，不重跑提炼或修改记忆正文。
 
-记忆、证据及导入预览/确认返回的 JSON 带有 `_memoryContext` 历史资料标记。CLI/MCP 保留该标记，采集和提炼入口排除这些返回内容，避免读出的旧记忆被重新当作工具证据。已识别的 JSON 凭据字段（包括转义后嵌套在工具输出字符串中的 OAuth 字段）在入库、证据读出及发送给提炼器前隐去；旧事件也会在出口重新处理。
+记忆、证据及导入预览/确认返回的 JSON 带有 `_memoryContext` 历史资料标记。CLI/MCP 保留该标记，采集和提炼入口排除这些返回内容，避免读出的旧记忆被重新当作工具证据。TypeScript 适配器在截断前脱敏，包括转义后嵌套在工具输出字符串中的可识别 JSON 凭据字段。入库、证据读出和发送给提炼器时也会脱敏。
 
 HTTP 证据接口使用 `POST /v1/evidence/search`（`query`、可选 `projectId`、`agent`、`sessionId`）和 `POST /v1/evidence/get`（`id`、可选 `projectId`），参数放在 JSON 请求体中；不再使用此前的 GET 证据路由。这样长中文查询和包含 `.`、`..` 或路径字符的来源 ID 都可原样传递。`POST /v1/context` 默认只解析项目，只有显式指定 `create: true` 才登记项目。
 
@@ -307,45 +311,19 @@ umem export /一个尚不存在的备份目录
 ## 自动提炼如何工作
 
 ```text
-宿主产生新消息 ──→ 本机 spool ──→ 事件去重、按会话合并任务
-                                            │
-                                    空闲 30 秒后串行提炼
-                                            │
-                           已登录 Codex CLI → 校验结构与来源
-                                            │
-                        明确证据：写 MD      不确定：待审核
-                                            │
-新会话 / 新一轮 ←── 全局 + 当前项目检索 ←── 更新本机索引
+宿主消息 → 本机 spool → SQLite 事件 → 证据检索
+                              └→ 轮次结束标记 → 收尾缓冲 → 串行复盘
+                                                         ├→ 零条记忆
+                                                         └→ 核对留存资格与来源 → Markdown
 ```
 
-核心流程的伪代码：
+提交需求会采集原话并召回记忆。只有适配器确认轮次结束，且已有本轮用户输入和回复或工具结果时，Worker 才能提炼。默认收尾缓冲为 30 秒，缓冲内迟到的同轮事件会延后复盘。缺少轮次标记、旧版适配器和中断时采集的内容仍可作为证据。升级前缺少轮次标记的待处理、运行中和失败任务会标记为「已跳过」，原始证据和已有 Markdown 可以继续读取。
 
-```ts
-onMessage(event):
-  if event.isInjected || event.isWorker: return
-  persistToSpool(event)
+Claude Code 的 Stop 可能被其他 hook 要求续跑。适配器会采集 Stop 的回复，等下一次提交或会话结束才确认上一轮收尾。迟到的 transcript 按消息时间关联最近轮次，无法归属的消息保留为证据。
 
-workerTick():
-  ingestSpoolWithEventDeduplication()
-  job = claimNextIdleSessionJob()
-  evidence = loadCapturedSources(relatedActiveMemories, project, budget = 48000)
-  proposals = codex.extract(job.events, relatedActiveMemoriesWithSourceExcerpts, evidence)
-  for proposal in proposals:
-    verifySourceIdsAndProjectScope(proposal)
-    if sourceWasWithdrawn(proposal): continue
-    if assistantOnly || uncertain || correctionVersionChanged:
-      saveCandidateMarkdown(proposal)
-    else:
-      serializedWriteWithRevisionCheck(proposal)
+复盘会收到本轮原话、最终回复、工具结果及最多两轮同会话背景。只有待确认的方案、一次性要求或待验证结果时，可以零条完成。用户明确设定的持续偏好或政策、已确认的长期决策和有工具依据的可复用经验按各自证据规则保存。用户主动调用记住、纠正和撤回工具时即时处理。
 
-recall(session, project, query):
-  candidates = globalMemories + currentProjectMemories
-  entries = versionChanges + relevantMemories(candidates, query) + stablePreferences
-  reserveIndexesWithinContextBudget(entries)
-  fillCompleteShortBodiesWithRemainingBudget(entries)
-  acknowledgeOnlyDeliveredVersions(entries)
-  return contextWithin6000Characters(entries)
-```
+`umem jobs` 的 `review` 字段提供输入事件 ID、背景事件 ID、提示词哈希、软件版本、请求模型及写入进度。纠正目标必须与提案范围一致。提案全部通过校验后才保存，再逐条提交。校验失败后重试会重新请求提炼，写入失败后重试会从已保存的提案续写。
 
 参考 Anthropic 的 [The components of agent memory](https://www.anthropic.com/research/components-of-agent-memory)，这里将注入上下文作为小型入口，完整 Markdown 与采集证据继续承担详细信息的保存：
 
@@ -362,9 +340,9 @@ recall(session, project, query):
 
 ## 边界与验收
 
-- 自动保存依赖模型判断，不承诺完美的语义去重或矛盾识别。失败任务保留，可重试；不确定内容进入候选。
+- 自动保存依赖模型判断，不承诺完美的语义去重或矛盾识别。已关联轮次的失败任务可重试。符合长期留存资格但证据不充分的新增条目可进入候选，证据不充分的纠正留作事件。同正文的低置信提案不会修订已生效记忆。
 - 搜索使用 SQLite FTS5 和中文分词，是关键词检索，不是向量语义搜索。每次完整注入预算为 6000 个 JavaScript 字符单位，长记录给出索引和完整读取提示。
-- DeepSeek 目前只自动采集真实用户消息，不解码 assistant 紧凑事件流。Hermes 不自动采集 subagent、cron 或 bot 发言。
+- DeepSeek 从宿主的会话事件采集真实用户输入、助手文本和工具结果，以宿主标记为 `completed` 的轮次作为提炼边界。Hermes 不自动采集 subagent、cron 或 bot 发言。
 - 暂不追溯宿主分支回退造成的历史证据变化。已经生效但后来不再适用的记忆，需要显式纠正或撤回。
 - 本版提供六种适配器和安装配方；真实桌面 / CLI 宿主的加载、信任和模型使用情况，需要按各自版本验收。
 - 不自动关闭现有原生记忆。先完成导入、审核、跨工具读写测试，再在宿主设置中切换，避免迁移中途失去记忆。

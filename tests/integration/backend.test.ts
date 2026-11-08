@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import {
   mkdtemp,
   rm,
@@ -22,6 +22,8 @@ import { MemoryClient } from "../../src/client.js";
 import { createMcp } from "../../src/mcp.js";
 import { runHook, spoolEvents } from "../../src/adapters/hooks.js";
 import { EventSchema, type Memory } from "../../src/contracts.js";
+import { MemoryWorker, type Extractor } from "../../src/memory/worker.js";
+import { capturedEvents } from "../backend/fixtures.js";
 import type { McpCallsPage } from "../../src/mcp-calls.js";
 
 let home: string;
@@ -66,9 +68,13 @@ test("真实 HTTP 鉴权、跨站拒绝、记忆 CRUD 和版本冲突", async ()
     method: "POST",
     body: { title: "API 测试", content: "使用中文", scope: "global" },
   });
-  await client.request(`/memories/${m.id}`, {
+  const updated = await client.request<Memory>(`/memories/${m.id}`, {
     method: "PATCH",
     body: { revision: m.revision, etag: m.etag, content: "使用粤语" },
+  });
+  expect(updated.sources.at(-1)).toMatchObject({
+    role: "manual",
+    excerpt: "使用粤语",
   });
   await expect(
     client.request(`/memories/${m.id}`, {
@@ -390,10 +396,15 @@ test("MCP 实际协议握手、写入和项目访问边界", async () => {
     await server.close();
   }
 });
-test("ZCode hook 将新用户原话采集到队列，并注入公共记忆", async () => {
+test("ZCode hook 采集原话并注入常驻记忆，提交时不排提炼任务", async () => {
   await client.request("/memories", {
     method: "POST",
-    body: { title: "语言", content: "全局默认中文", scope: "global" },
+    body: {
+      title: "语言",
+      content: "全局默认中文",
+      scope: "global",
+      alwaysRecall: true,
+    },
   });
   const result = await runHook(home, "zcode", {
     session_id: "z1",
@@ -403,7 +414,7 @@ test("ZCode hook 将新用户原话采集到队列，并注入公共记忆", asy
   });
   expect(JSON.stringify(result)).toContain("全局默认中文");
   await daemon.store.drainSpool();
-  const events = daemon.store.events(daemon.store.jobs()[0].id);
+  const events = capturedEvents(daemon.store);
   expect(events[0].content).toBe("以后使用 TypeScript");
   await runHook(home, "zcode", {
     session_id: "z1",
@@ -412,7 +423,8 @@ test("ZCode hook 将新用户原话采集到队列，并注入公共记忆", asy
     turn_id: "t1",
   });
   await daemon.store.drainSpool();
-  expect(daemon.store.events(daemon.store.jobs()[0].id)).toHaveLength(1);
+  expect(capturedEvents(daemon.store)).toHaveLength(1);
+  expect(daemon.store.jobs()).toEqual([]);
 });
 test("Codex 增量采集不导入旧历史，不丢跨缓冲区 UTF-8 或半行", async () => {
   const path = join(home, "transcript.jsonl");
@@ -457,7 +469,7 @@ test("Codex 增量采集不导入旧历史，不丢跨缓冲区 UTF-8 或半行"
     transcript_path: path,
   });
   await daemon.store.drainSpool();
-  const events = daemon.store.events(daemon.store.jobs()[0].id);
+  const events = capturedEvents(daemon.store);
   expect(events).toHaveLength(2);
   expect(events[0].content).not.toContain("�");
   expect(events[1].content).toBe("最后一条新回复");
@@ -496,11 +508,11 @@ test("Codex 空工具输出不阻塞同批有效事件入库", async () => {
   await stop();
   await daemon.store.drainSpool();
   expect(await readdir(join(home, "spool"))).toEqual([]);
-  const jobs = daemon.store.jobs();
-  expect(jobs).toHaveLength(1);
-  expect(daemon.store.events(jobs[0].id).map(({ content }) => content)).toEqual(
-    ["有效工具输出", "正常回复"],
-  );
+  expect(daemon.store.jobs()).toEqual([]);
+  expect(capturedEvents(daemon.store).map(({ content }) => content)).toEqual([
+    "有效工具输出",
+    "正常回复",
+  ]);
 });
 test("服务停机时已采集内容仍可耐久保存，重启后消费", async () => {
   await daemon.close();
@@ -516,9 +528,7 @@ test("服务停机时已采集内容仍可耐久保存，重启后消费", async
   ]);
   daemon = await startDaemon(home, { quiet: true });
   await daemon.store.drainSpool();
-  expect(daemon.store.events(daemon.store.jobs()[0].id)[0].content).toBe(
-    "离线时的新偏好",
-  );
+  expect(capturedEvents(daemon.store)[0].content).toBe("离线时的新偏好");
 });
 
 test("监听失败会释放数据目录写锁", async () => {
@@ -727,4 +737,74 @@ test("服务离线时 CLI hook 返回空上下文，保留本轮用户证据", a
   ).toMatchObject([
     { sessionId: "offline-hook", role: "user", content: "离线期间的新偏好" },
   ]);
+});
+
+test("隔离库端到端：仅提交需求不提炼，待确认方案不入库，按钮任务不注入 CI", async () => {
+  const cwd = join(home, "ui-project");
+  await mkdir(cwd);
+  const project = await daemon.store.addProject(cwd);
+  const ci = await client.request<Memory>("/memories", {
+    method: "POST",
+    body: {
+      title: "纯文档变更跳过 CI",
+      content: "GitHub Actions 需要保留必要校验。",
+      scope: "project",
+      projectId: project.id,
+      kind: "constraint",
+    },
+  });
+  const first = { session_id: "review", turn_id: "first", cwd };
+  const result = await runHook(home, "codex", {
+    ...first,
+    hook_event_name: "UserPromptSubmit",
+    prompt: "本次优化 CI，保留必要测试。",
+  });
+  expect(JSON.stringify(result)).toContain(ci.title);
+  const extract = vi.fn<Extractor>(async (events) => ({
+    outcome: "pending",
+    proposals: [
+      {
+        action: "add",
+        targetId: null,
+        expectedRevision: null,
+        title: "CI 提速方案",
+        content: "CI 应当采用本轮提议的策略。",
+        scope: "project",
+        kind: "decision",
+        sourceIds: [events[0].id],
+        basis: "adopted_decision",
+        certainty: "supported",
+        reason: "模拟将待确认方案误作为已采纳决策",
+      },
+    ],
+  }));
+  const worker = new MemoryWorker(daemon.store, daemon.worker.config, extract);
+  await worker.tick(true);
+  expect(extract).not.toHaveBeenCalled();
+  expect(daemon.store.jobs()).toEqual([]);
+  expect(capturedEvents(daemon.store)).toMatchObject([
+    { turnId: "first", role: "user" },
+  ]);
+
+  await runHook(home, "codex", {
+    ...first,
+    hook_event_name: "Stop",
+    last_assistant_message: "建议调整工作流，请先确认，尚未执行。",
+  });
+  await worker.tick(true);
+  expect(extract).toHaveBeenCalledOnce();
+  expect(daemon.store.jobs()).toMatchObject([
+    { state: "done", review: { total: 0 } },
+  ]);
+  expect(
+    (await daemon.store.list({ projectId: project.id })).map((m) => m.id),
+  ).toEqual([ci.id]);
+
+  const unrelated = await runHook(home, "codex", {
+    ...first,
+    turn_id: "second",
+    hook_event_name: "UserPromptSubmit",
+    prompt: "帮我优化一下按钮的圆角配色",
+  });
+  expect(unrelated).toEqual({});
 });

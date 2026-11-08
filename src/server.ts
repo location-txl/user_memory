@@ -5,7 +5,7 @@ import { timingSafeEqual } from "node:crypto";
 import {
   AppError,
   CreateMemorySchema,
-  EventSchema,
+  IngestSchema,
   RecallSchema,
   Id,
 } from "./contracts.js";
@@ -16,6 +16,7 @@ import { memoryData } from "./memory/files.js";
 import {
   EvidenceId,
   EvidenceSearchSchema,
+  evidenceSource,
   getEvidence,
   searchEvidence,
 } from "./memory/evidence.js";
@@ -175,15 +176,35 @@ export function createApp(
         title: z.string().min(1).max(160).optional(),
         status: z.enum(["active", "candidate", "withdrawn"]).optional(),
         reason: z.string().optional(),
+        alwaysRecall: z.boolean().optional(),
+        sourceId: EvidenceId.optional(),
+        sourceProjectId: Id.optional(),
       })
       .parse(await c.req.json());
-    const { revision, etag, ...changes } = data;
+    const { revision, etag, sourceId, sourceProjectId, ...changes } = data;
+    const id = Id.parse(c.req.param("id"));
+    const memory = await store.get(id);
+    const evidence =
+      sourceId && changes.content !== undefined
+        ? await getEvidence(
+            store,
+            sourceId,
+            memory.projectId ?? sourceProjectId,
+          )
+        : undefined;
+    const sources =
+      evidence?.role === "user"
+        ? [
+            ...memory.sources.filter((source) => source.id !== evidence.id),
+            evidenceSource(evidence, memory.projectId),
+          ]
+        : undefined;
     return c.json(
       memoryData(
         await store.revise(
-          Id.parse(c.req.param("id")),
+          id,
           revision,
-          changes,
+          sources ? { ...changes, sources } : changes,
           etag,
         ),
       ),
@@ -211,14 +232,11 @@ export function createApp(
     );
   });
   app.post("/v1/ingest", async (c) => {
-    const events = z
-      .array(EventSchema)
-      .max(100)
-      .parse(await c.req.json());
-    for (const event of events)
-      if (!event.projectId && event.cwd)
-        event.projectId = (await store.resolveProject(event.cwd, true))?.id;
-    return c.json({ accepted: store.ingest(events) });
+    const batch = IngestSchema.refine(
+      (input) => (Array.isArray(input) ? input : input.events).length <= 100,
+      "At most 100 events are accepted.",
+    ).parse(await c.req.json());
+    return c.json({ accepted: await store.ingestBatch(batch) });
   });
   app.get("/v1/jobs", (c) => c.json(store.jobs()));
   app.post("/v1/jobs/:id/retry", (c) =>

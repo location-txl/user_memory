@@ -1,5 +1,5 @@
 import { expect } from "vitest";
-import { test, addTestProject } from "../fixtures.js";
+import { test, addTestProject, capturedEvents } from "../fixtures.js";
 import {
   CreateMemorySchema,
   EventSchema,
@@ -141,7 +141,7 @@ test("撤回记忆后旧来源不可搜索或读取，采集记录仍保留用�
     status: 404,
     code: "EVIDENCE_NOT_FOUND",
   });
-  expect(store.events(store.jobs()[0].id)).toEqual([e]);
+  expect(capturedEvents(store)).toEqual([e]);
   expect(await collectEvidence(store, [m])).toEqual({
     events: [],
     unavailableSourceIds: [e.id],
@@ -175,7 +175,7 @@ test("旧数据库首次回填事件索引，重启和重复采集不产生重�
       expect(
         (await searchEvidence(reopened, { query: "TypeScript" })).total,
       ).toBe(2);
-      expect(reopened.events(reopened.jobs()[0].id)).toHaveLength(207);
+      expect(capturedEvents(reopened)).toHaveLength(207);
     } finally {
       reopened.close();
     }

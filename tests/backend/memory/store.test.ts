@@ -203,7 +203,7 @@ test("真实 Git worktree 与主目录跨 Agent 共享项目及记忆", async ({
       agent,
       cwd,
       sessionId: agent,
-      query: "",
+      query: "默认用中文沟通",
     });
     expect(result.projectId).toBe(project.id);
     expect(result.memories.map((m) => m.id)).toContain(memory.id);
@@ -346,4 +346,56 @@ test("用最新版本也不能修改或重新激活已撤回的记忆", async ({
   ).rejects.toMatchObject({ status: 409, code: "MEMORY_WITHDRAWN" });
   expect(await store.get(memory.id)).toEqual(withdrawn);
   expect((await store.history(memory.id)).map((m) => m.revision)).toEqual([1]);
+});
+
+test("同正文的用户确认会合并来源并将原候选转正", async ({ store }) => {
+  const first = {
+    id: "suggestion",
+    agent: "codex" as const,
+    role: "assistant" as const,
+    at: "2026-11-07T00:00:00Z",
+    excerpt: "可能偏好中文",
+  };
+  const confirm = {
+    ...first,
+    id: "confirmation",
+    role: "user" as const,
+    excerpt: "以后默认中文",
+  };
+  const original = await store.create({
+    ...input(),
+    status: "candidate",
+    sources: [first],
+  });
+  const updated = await store.create({ ...input(), sources: [confirm] });
+  expect(updated).toMatchObject({
+    id: original.id,
+    revision: 2,
+    status: "active",
+    sources: [first, confirm],
+  });
+  expect(await store.create({ ...input(), sources: [confirm] })).toEqual(
+    updated,
+  );
+  expect(await store.history(original.id)).toMatchObject([
+    { status: "candidate", sources: [first] },
+  ]);
+});
+
+test("缺少目标的旧纠正候选不会被直接批准", async ({ store }) => {
+  const original = await store.create(input());
+  const candidate = await store.create({
+    ...input("使用粤语"),
+    status: "candidate",
+    reason: "旧记忆已变化或证据不确定，请审核。",
+  });
+  await expect(
+    store.revise(
+      candidate.id,
+      candidate.revision,
+      { status: "active" },
+      candidate.etag,
+    ),
+  ).rejects.toMatchObject({ code: "MEMORY_CORRECTION_TARGET_MISSING" });
+  expect(await store.list({ status: "active" })).toEqual([original]);
 });

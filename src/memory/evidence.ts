@@ -6,6 +6,7 @@ import {
   Id,
   type Memory,
   type MemoryEvent,
+  type Source,
 } from "../contracts.js";
 import { scrub, scrubEvent, terms } from "./files.js";
 import type { MemoryStore } from "./store.js";
@@ -17,6 +18,18 @@ export const EvidenceSearchSchema = z.object({
   sessionId: z.string().min(1).max(300).optional(),
 });
 export const EvidenceId = z.string().min(1).max(300);
+
+export function evidenceSource(event: MemoryEvent, projectId?: string): Source {
+  const visibleInTarget = !event.projectId || event.projectId === projectId;
+  return {
+    id: event.id,
+    agent: event.agent,
+    role: event.role,
+    at: event.at,
+    sessionId: visibleInTarget ? event.sessionId : undefined,
+    excerpt: visibleInTarget ? scrub(event.content).slice(0, 4000) : "",
+  };
+}
 export type EvidenceBundle = {
   events: MemoryEvent[];
   unavailableSourceIds: string[];

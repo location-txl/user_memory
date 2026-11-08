@@ -13,6 +13,8 @@ const errors = {
   error_EVIDENCE_NOT_FOUND:
     "Evidence was not captured, has been withdrawn, or is outside the current project. Check the memory's saved source excerpt.",
   error_MEMORY_CONFLICT: "Memory has changed. Reload it before editing.",
+  error_MEMORY_CORRECTION_TARGET_MISSING:
+    "This older correction has no target. Open and edit the original memory.",
   error_MEMORY_WITHDRAWN:
     "Memory has been withdrawn. Create a new record to remember it again.",
   error_WORKER_UNAVAILABLE: "The extraction worker is not running.",
@@ -77,6 +79,8 @@ export default {
   saveChanges: "Save changes",
   cancel: "Cancel",
   edit: "Edit",
+  enableAlwaysRecall: "Always recall",
+  disableAlwaysRecall: "Stop always recalling",
   approveMemory: "Approve memory",
   discard: "Discard",
   withdraw: "Withdraw",
@@ -142,7 +146,7 @@ export default {
     "Pending records are still saved while paused. Extraction uses your signed-in Codex account and its quota.",
   codexExecutable: "Codex executable",
   modelPlaceholder: "Model (leave blank for the default)",
-  extractionIdleSeconds: "Extract after session idle time (seconds)",
+  extractionIdleSeconds: "Buffer after a captured turn ends (seconds)",
   saveSettings: "Save settings",
   dataLocation: "Data location",
   loading: "Loading…",
@@ -163,6 +167,7 @@ export default {
   extractionTokensNotReported: "Tokens not reported",
   extractionUsageCoverage: "{{reported}} of {{calls}} calls reported usage",
   retryJob: "Retry job",
+  skipped: "Skipped",
   noExtractionJobs:
     "No extraction jobs yet. Connect a tool and complete a conversation to see jobs here.",
   preference: "Preference",

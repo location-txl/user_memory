@@ -13,6 +13,8 @@ export default {
   error_EVIDENCE_NOT_FOUND:
     "证据未采集、已撤回或不属于当前项目；可查看记忆中保留的来源摘录。",
   error_MEMORY_CONFLICT: "记忆已改变，请重新读取后再编辑。",
+  error_MEMORY_CORRECTION_TARGET_MISSING:
+    "这条旧纠正缺少目标。请打开原记忆进行编辑。",
   error_MEMORY_WITHDRAWN: "记忆已撤回，如需重新记住，请新建记录。",
   error_WORKER_UNAVAILABLE: "提炼服务未运行。",
   error_MCP_CALL_LOG_UNAVAILABLE: "无法读取 MCP 调用记录。",
@@ -67,6 +69,8 @@ export default {
   saveChanges: "保存修改",
   cancel: "取消",
   edit: "编辑",
+  enableAlwaysRecall: "设为常驻",
+  disableAlwaysRecall: "取消常驻",
   approveMemory: "确认记住",
   discard: "不保留",
   withdraw: "撤回",
@@ -125,7 +129,7 @@ export default {
     "暂停后继续保存待处理记录。提炼会调用你的 Codex 登录账户，消耗相应额度。",
   codexExecutable: "Codex 可执行文件",
   modelPlaceholder: "模型（留空使用默认模型）",
-  extractionIdleSeconds: "会话空闲多久后提炼（秒）",
+  extractionIdleSeconds: "轮次结束后的收尾缓冲（秒）",
   saveSettings: "保存设置",
   dataLocation: "数据位置",
   loading: "正在读取…",
@@ -145,6 +149,7 @@ export default {
   extractionTokensNotReported: "Token 未上报",
   extractionUsageCoverage: "{{reported}}/{{calls}} 次已上报",
   retryJob: "重试任务",
+  skipped: "已跳过",
   noExtractionJobs:
     "还没有提炼任务。接入工具并完成一次对话后，记录会出现在这里。",
   preference: "偏好",

@@ -61,16 +61,82 @@ test("MCP 限制项目读写，拒绝旧版纠正，撤回后只返回状态", a
       }
     }
     expect(await store.get(id)).toEqual(memory);
+    const source = {
+      id: "user-correction",
+      agent: "codex" as const,
+      sessionId: "test-correction",
+      projectId: owner.id,
+      role: "user" as const,
+      content: "请记住项目修订正文。",
+      at: new Date().toISOString(),
+      injected: false,
+      worker: false,
+    };
+    store.ingest([
+      source,
+      { ...source, id: "foreign-correction", projectId: other.id },
+    ]);
     const scoped = { id, projectId: owner.id };
+    const foreign = await call("memory_correct", {
+      ...scoped,
+      revision,
+      etag,
+      content: "越界来源",
+      sourceId: "foreign-correction",
+    });
+    expect(foreign.isError).toBe(true);
     const corrected = await call("memory_correct", {
       ...scoped,
       revision,
       etag,
       content: "项目修订正文",
+      sourceId: source.id,
     });
     expect(corrected.isError).not.toBe(true);
     const current = await store.get(id);
     expect(current).toMatchObject({ content: "项目修订正文", revision: 2 });
+    expect(current.sources.at(-1)).toMatchObject({
+      id: source.id,
+      role: "user",
+      excerpt: source.content,
+    });
+    const global = await store.create(
+      CreateMemorySchema.parse({
+        title: "全局偏好",
+        content: "默认采用旧约定",
+        scope: "global",
+      }),
+    );
+    expect(
+      (
+        await call("memory_correct", {
+          projectId: owner.id,
+          id: global.id,
+          revision: global.revision,
+          etag: global.etag,
+          content: "默认采用新约定",
+          sourceId: source.id,
+        })
+      ).isError,
+    ).not.toBe(true);
+    const globalRead = await call("memory_get", {
+      id: global.id,
+      projectId: other.id,
+    });
+    const globalRecord = JSON.parse(
+      (globalRead.content as { text: string }[])[0].text,
+    );
+    expect(globalRecord.content).toBe("默认采用新约定");
+    expect(globalRecord.sources.at(-1).id).toBe(source.id);
+    expect(JSON.stringify(globalRecord)).not.toContain(source.content);
+    expect(
+      (
+        await call("memory_evidence_get", {
+          id: source.id,
+          projectId: other.id,
+        })
+      ).isError,
+    ).toBe(true);
     expect(
       (
         await call("memory_correct", {
@@ -93,6 +159,7 @@ test("MCP 限制项目读写，拒绝旧版纠正，撤回后只返回状态", a
     expect(read.isError).not.toBe(true);
     const [{ text }] = read.content as { text: string }[];
     expect(JSON.parse(text)).toEqual({
+      _memoryContext: "<user-memory-context>",
       id,
       status: "withdrawn",
       revision: 3,
@@ -311,7 +378,7 @@ test("MCP 日志无法写入时仍返回原工具结果", async ({ home, store }
       content: [
         {
           type: "text",
-          text: '{"_memoryContext":"<user-memory-context>","total":0,"results":[]}',
+          text: '{"_memoryContext":"<user-memory-context>","projectId":null,"total":0,"results":[]}',
         },
       ],
     });

@@ -1,6 +1,7 @@
 import { afterEach, expect, vi } from "vitest";
-import { readFile } from "node:fs/promises";
-import { test, addTestProject } from "../fixtures.js";
+import { readFile, rename } from "node:fs/promises";
+import { join } from "node:path";
+import { test, addTestProject, reviewTurn } from "../fixtures.js";
 import { MemoryStore } from "../../../src/memory/store.js";
 import { MemoryWorker, type Extractor } from "../../../src/memory/worker.js";
 import { ConfigSchema } from "../../../src/config.js";
@@ -32,13 +33,14 @@ const proposal = (data: Partial<Proposal> = {}): Proposal => ({
   kind: "preference",
   sourceIds: ["e1"],
   certainty: "supported",
+  basis: "explicit_policy",
   reason: "用户明确说明",
   ...data,
 });
 const config = ConfigSchema.parse({ idleSeconds: 0 });
 test("事件去重，排除注入和 worker；有效用户证据自动保存", async ({ store }) => {
   expect(
-    store.ingest([
+    reviewTurn(store, [
       event(),
       event(),
       event({ id: "e2", injected: true }),
@@ -46,6 +48,7 @@ test("事件去重，排除注入和 worker；有效用户证据自动保存", a
     ]),
   ).toBe(1);
   const worker = new MemoryWorker(store, config, async () => ({
+    outcome: "settled" as const,
     proposals: [proposal()],
   }));
   await worker.tick(true);
@@ -55,13 +58,15 @@ test("事件去重，排除注入和 worker；有效用户证据自动保存", a
   expect(m.sources[0].id).toBe("e1");
 });
 test("助手独自声称的偏好只进入候选；伪造证据让任务失败", async ({ store }) => {
-  store.ingest([event({ role: "assistant" })]);
+  reviewTurn(store, [event({ role: "assistant" })]);
   await new MemoryWorker(store, config, async () => ({
+    outcome: "settled" as const,
     proposals: [proposal()],
   })).tick(true);
   expect((await store.list())[0].status).toBe("candidate");
-  store.ingest([event({ id: "e2" })]);
+  reviewTurn(store, [event({ id: "e2" })]);
   await new MemoryWorker(store, config, async () => ({
+    outcome: "settled" as const,
     proposals: [proposal({ sourceIds: ["does-not-exist"] })],
   })).tick(true);
   expect(store.jobs()[0].state).toBe("failed");
@@ -70,15 +75,16 @@ test("助手独自声称的偏好只进入候选；伪造证据让任务失败",
   );
 });
 test("模型失败保留证据可重试，撤回后同源重放不复活", async ({ store }) => {
-  store.ingest([event()]);
+  reviewTurn(store, [event()]);
   await new MemoryWorker(store, config, async () => {
     throw new Error("测试模型断线");
   }).tick(true);
   const job = store.jobs()[0];
   expect(job.state).toBe("failed");
-  expect(store.events(job.id)).toHaveLength(1);
+  expect(store.events(job.id)).toHaveLength(2);
   store.retry(job.id);
   const worker = new MemoryWorker(store, config, async () => ({
+    outcome: "settled" as const,
     proposals: [proposal()],
   }));
   await worker.tick(true);
@@ -89,13 +95,14 @@ test("模型失败保留证据可重试，撤回后同源重放不复活", async
   expect((await store.list()).map((m) => m.status)).toEqual(["withdrawn"]);
 });
 test("重启恢复中断的提炼任务", async ({ home, store }) => {
-  store.ingest([event()]);
+  reviewTurn(store, [event()]);
   store.db.exec("UPDATE jobs SET state='running'");
   store.close();
   const reopened = await MemoryStore.open(home);
   try {
     expect(reopened.jobs()[0].state).toBe("pending");
     await new MemoryWorker(reopened, config, async () => ({
+      outcome: "settled" as const,
       proposals: [proposal()],
     })).tick(true);
     expect(reopened.jobs()[0].state).toBe("done");
@@ -103,12 +110,13 @@ test("重启恢复中断的提炼任务", async ({ home, store }) => {
     reopened.close();
   }
 });
-test("纠正期间旧记录变更，输出转为候选而非覆盖", async ({ store }) => {
-  store.ingest([event()]);
+test("纠正期间旧记录变更，旧输出不覆盖或生成冲突候选", async ({ store }) => {
+  reviewTurn(store, [event()]);
   await new MemoryWorker(store, config, async () => ({
+    outcome: "settled" as const,
     proposals: [proposal()],
   })).tick(true);
-  store.ingest([event({ id: "e2", content: "TypeScript 偏好需要纠正" })]);
+  reviewTurn(store, [event({ id: "e2", content: "TypeScript 偏好需要纠正" })]);
   await new MemoryWorker(store, config, async (_events, existing) => {
     const m = existing[0];
     await store.revise(
@@ -118,6 +126,7 @@ test("纠正期间旧记录变更，输出转为候选而非覆盖", async ({ st
       m.etag,
     );
     return {
+      outcome: "settled" as const,
       proposals: [
         proposal({
           action: "correct",
@@ -133,54 +142,87 @@ test("纠正期间旧记录变更，输出转为候选而非覆盖", async ({ st
   expect(all.find((m) => m.status === "active")?.content).toContain(
     "刚被用户改过",
   );
-  expect(all.find((m) => m.status === "candidate")?.content).toBe(
-    "改为 Python",
-  );
+  expect(all).toHaveLength(1);
 });
 test("已识别的凭据从事件、正文和来源摘录中隐去", async ({ store }) => {
   const secret = "sk-abcdefghijklmnopqrstuvwx";
-  store.ingest([event({ content: `测试凭据 ${secret}` })]);
+  reviewTurn(store, [event({ content: `测试凭据 ${secret}` })]);
   expect(store.events(store.jobs()[0].id)[0].content).not.toContain(secret);
   await new MemoryWorker(store, config, async () => ({
+    outcome: "settled" as const,
     proposals: [proposal({ content: secret, title: secret, reason: secret })],
   })).tick(true);
   const [m] = await store.list();
   expect(await readFile(m.file, "utf8")).not.toContain(secret);
 });
 
-test("自动提炼只认最后一次事件后的空闲期", async ({ store }) => {
+test("只提交需求超过三十秒仍不提炼，结束缓冲内的同轮证据会纳入复盘", async ({
+  store,
+}) => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date("2026-11-07T00:00:00Z"));
-  const extract = vi.fn(async () => ({ proposals: [] }));
+  const extract = vi.fn<Extractor>(async () => ({
+    outcome: "pending",
+    proposals: [proposal({ basis: "adopted_decision", kind: "decision" })],
+  }));
   const worker = new MemoryWorker(
     store,
     ConfigSchema.parse({ idleSeconds: 30 }),
     extract,
   );
-  store.ingest([event()]);
-  vi.setSystemTime(new Date("2026-11-07T00:00:29Z"));
-  store.ingest([event({ id: "e2" })]);
-  vi.setSystemTime(new Date("2026-11-07T00:00:58Z"));
+  const request = event({ turnId: "t1", content: "本次优化 CI 时保留测试。" });
+  store.ingest([request]);
+  vi.setSystemTime(new Date("2026-11-07T00:00:45Z"));
   await worker.tick();
   expect(extract).not.toHaveBeenCalled();
-  expect(store.jobs()[0].state).toBe("pending");
-  vi.setSystemTime(new Date("2026-11-07T00:00:59Z"));
-  await worker.tick();
-  expect(extract).toHaveBeenCalledExactlyOnceWith(
+  expect(store.jobs()).toEqual([]);
+
+  const turnEnd = {
+    agent: request.agent,
+    sessionId: request.sessionId,
+    turnId: "t1",
+    at: new Date().toISOString(),
+  };
+  store.ingest(
     [
-      expect.objectContaining({ id: "e1" }),
-      expect.objectContaining({ id: "e2" }),
+      event({
+        id: "reply",
+        turnId: "t1",
+        role: "assistant",
+        content: "方案等待确认。",
+      }),
     ],
-    [],
-    expect.any(Function),
-    { events: [], unavailableSourceIds: [], omittedSourceIds: [] },
+    turnEnd,
   );
-  expect(store.jobs()[0].state).toBe("done");
+  vi.setSystemTime(new Date("2026-11-07T00:01:00Z"));
+  store.ingest([
+    event({ id: "late", turnId: "t1", role: "tool" }),
+    event({ id: "new-prompt", turnId: "t2" }),
+  ]);
+  vi.setSystemTime(new Date("2026-11-07T00:01:29Z"));
+  await worker.tick();
+  expect(extract).not.toHaveBeenCalled();
+  vi.setSystemTime(new Date("2026-11-07T00:01:30Z"));
+  store.ingest([], turnEnd);
+  await worker.tick();
+  expect(extract).toHaveBeenCalledOnce();
+  expect(extract.mock.calls[0][0].map((e) => e.id)).toEqual([
+    "e1",
+    "reply",
+    "late",
+  ]);
+  expect(store.jobs()).toMatchObject([{ state: "done" }]);
+  expect(await store.list()).toEqual([]);
+  expect(await worker.tick()).toBeUndefined();
+  expect(extract).toHaveBeenCalledOnce();
 });
 
 test("关闭自动提炼时保留队列，显式触发仍能处理", async ({ store }) => {
-  store.ingest([event()]);
-  const extract = vi.fn(async () => ({ proposals: [proposal()] }));
+  reviewTurn(store, [event()]);
+  const extract = vi.fn(async () => ({
+    outcome: "settled" as const,
+    proposals: [proposal()],
+  }));
   const worker = new MemoryWorker(
     store,
     { ...config, extractionEnabled: false },
@@ -197,7 +239,8 @@ test("关闭自动提炼时保留队列，显式触发仍能处理", async ({ st
 test("正在提炼时再次 tick 不会处理同一任务或提前领取下一条", async ({
   store,
 }) => {
-  store.ingest([event(), event({ id: "e2", sessionId: "s2" })]);
+  reviewTurn(store, [event()]);
+  reviewTurn(store, [event({ id: "e2", sessionId: "s2" })]);
   let entered!: () => void;
   const started = new Promise<void>((resolve) => {
     entered = resolve;
@@ -209,7 +252,7 @@ test("正在提炼时再次 tick 不会处理同一任务或提前领取下一�
   const extract = vi.fn(async () => {
     entered();
     await gate;
-    return { proposals: [] };
+    return { outcome: "settled" as const, proposals: [] };
   });
   const worker = new MemoryWorker(store, config, extract);
   const first = worker.tick(true);
@@ -252,9 +295,16 @@ test.for([
 ] as const)(
   "证据规则：$role / $kind / $certainty → $status",
   async ({ role, kind, certainty, status }, { store }) => {
-    store.ingest([event({ role })]);
+    reviewTurn(store, [event({ role })]);
     await new MemoryWorker(store, config, async () => ({
-      proposals: [proposal({ kind, certainty })],
+      outcome: "settled" as const,
+      proposals: [
+        proposal({
+          kind,
+          certainty,
+          basis: kind === "lesson" ? "verified_lesson" : "explicit_policy",
+        }),
+      ],
     })).tick(true);
     expect(store.jobs()[0].state).toBe("done");
     expect(await store.list()).toMatchObject([
@@ -284,8 +334,9 @@ test("有明确证据的纠正保留记忆 ID、旧版和新旧来源", async ({
       ],
     }),
   );
-  store.ingest([second]);
+  reviewTurn(store, [second]);
   await new MemoryWorker(store, config, async () => ({
+    outcome: "settled" as const,
     proposals: [
       proposal({
         action: "correct",
@@ -322,8 +373,9 @@ test("另一个项目的事件不能纠正目标记忆", async ({ store }) => {
       projectId: target.id,
     }),
   );
-  store.ingest([event({ projectId: source.id })]);
+  reviewTurn(store, [event({ projectId: source.id })]);
   await new MemoryWorker(store, config, async () => ({
+    outcome: "settled" as const,
     proposals: [
       proposal({
         action: "correct",
@@ -350,7 +402,6 @@ test.for([false, true])(
       content: `TypeScript ${"背景".repeat(2500)} 只限测试工具`,
     });
     store.ingest([old]);
-    store.db.exec("UPDATE jobs SET state='done'");
     const original = await store.create(
       CreateMemorySchema.parse({
         title: "TypeScript 约束",
@@ -372,10 +423,10 @@ test.for([false, true])(
       id: "new",
       content: "TypeScript 仅用于测试工具，其他工具不受此约束",
     });
-    store.ingest([current]);
+    reviewTurn(store, [current]);
     const extract = vi.fn<Extractor>(
       async (events, existing, _usage, evidence) => {
-        expect(events).toEqual([current]);
+        expect(events).toMatchObject([current, { role: "assistant" }]);
         expect(existing).toMatchObject([{ id: original.id }]);
         expect(evidence).toEqual({
           events: [old],
@@ -384,6 +435,7 @@ test.for([false, true])(
         });
         expect(existing[0].sources[0].excerpt).not.toContain("只限测试工具");
         return {
+          outcome: "settled" as const,
           proposals: [
             proposal({
               action: "correct",
@@ -413,3 +465,245 @@ test.for([false, true])(
     }
   },
 );
+
+test("写入失败后重启从已验证提案续写，不重复请求模型或写入已完成提案", async ({
+  home,
+  store,
+}) => {
+  reviewTurn(store, [event()]);
+  const extract = vi.fn<Extractor>(async () => ({
+    outcome: "settled",
+    proposals: [
+      proposal(),
+      proposal({ title: "另一条约定", content: "默认用中文" }),
+    ],
+  }));
+  const realCreate = store.create.bind(store);
+  vi.spyOn(store, "create")
+    .mockImplementationOnce(realCreate)
+    .mockRejectedValueOnce(new Error("模拟写入失败"));
+  await new MemoryWorker(store, config, extract).tick(true);
+  expect(store.jobs()[0]).toMatchObject({
+    state: "failed",
+    review: { processed: 1, total: 2, inputEventIds: ["e1", "e1:reply"] },
+  });
+  store.close();
+  const reopened = await MemoryStore.open(home);
+  try {
+    expect(reopened.retry(reopened.jobs()[0].id)).toBe(1);
+    await new MemoryWorker(reopened, config, extract).tick(true);
+    expect(extract).toHaveBeenCalledOnce();
+    expect(reopened.jobs()[0]).toMatchObject({
+      state: "done",
+      review: { processed: 2, total: 2 },
+    });
+    expect(await reopened.list()).toMatchObject([
+      { revision: 1 },
+      { revision: 1 },
+    ]);
+  } finally {
+    reopened.close();
+  }
+});
+
+test("待确认的任务仍可保留用户明确给出的独立长期政策", async ({ store }) => {
+  reviewTurn(store, [
+    event({
+      content: "以后所有项目都默认使用中文。本次 CI 优化方案先给我确认。",
+    }),
+  ]);
+  await new MemoryWorker(store, config, async () => ({
+    outcome: "pending",
+    proposals: [
+      proposal({ content: "默认使用中文" }),
+      proposal({
+        basis: "adopted_decision",
+        kind: "decision",
+        content: "采用 CI 方案",
+      }),
+    ],
+  })).tick(true);
+  expect(await store.list()).toMatchObject([
+    { content: "默认使用中文", status: "active" },
+  ]);
+});
+
+test("跨范围纠正在保存提案前失败，修正模型输出后可重试全部有效提案", async ({
+  store,
+}) => {
+  const project = await addTestProject(store, "scope-check");
+  const original = await store.create(
+    CreateMemorySchema.parse({
+      title: "TypeScript 全局偏好",
+      content: "默认使用 TypeScript",
+      scope: "global",
+    }),
+  );
+  reviewTurn(store, [event({ projectId: project.id })]);
+  const add = proposal({
+    scope: "project",
+    content: "项目采用独立 TypeScript 约定",
+  });
+  const correct = proposal({
+    action: "correct",
+    targetId: original.id,
+    expectedRevision: original.revision,
+    scope: "project",
+    content: "尝试跨范围纠正",
+  });
+  const extract = vi
+    .fn<Extractor>()
+    .mockResolvedValueOnce({ outcome: "settled", proposals: [add, correct] })
+    .mockResolvedValueOnce({ outcome: "settled", proposals: [add] });
+  const worker = new MemoryWorker(store, config, extract);
+  await worker.tick(true);
+  const [job] = store.jobs();
+  expect(job.state).toBe("failed");
+  expect.soft(job.review).toBeUndefined();
+  expect
+    .soft(await store.list({ scope: "project", projectId: project.id }))
+    .toEqual([]);
+  expect(store.retry(job.id)).toBe(1);
+  await worker.tick(true);
+  expect(extract).toHaveBeenCalledTimes(2);
+  expect(store.jobs()[0]).toMatchObject({
+    state: "done",
+    review: { processed: 1, total: 1 },
+  });
+  expect(
+    await store.list({ scope: "project", projectId: project.id }),
+  ).toMatchObject([{ content: add.content }]);
+  expect(await store.get(original.id)).toEqual(original);
+});
+
+test("续写旧提案时跳过已保存的跨范围纠正并处理后续提案", async ({ store }) => {
+  const project = await addTestProject(store, "old-review");
+  const original = await store.create(
+    CreateMemorySchema.parse({
+      title: "全局 TypeScript 约定",
+      content: "默认使用 TypeScript",
+      scope: "global",
+    }),
+  );
+  reviewTurn(store, [event({ projectId: project.id })]);
+  const [job] = store.jobs();
+  const add = proposal({ scope: "project", content: "后续有效提案" });
+  store.saveExtractionReview(job.id, {
+    inputEventIds: store.events(job.id).map((item) => item.id),
+    contextEventIds: [],
+    promptHash: "old-review",
+    version: "0.1.0",
+    requestedModel: null,
+    targets: { [original.id]: original.etag },
+    proposals: [
+      proposal({
+        action: "correct",
+        targetId: original.id,
+        expectedRevision: original.revision,
+        scope: "project",
+      }),
+      add,
+    ],
+  });
+  store.db.prepare("UPDATE jobs SET state='failed' WHERE id=?").run(job.id);
+  expect(store.retry(job.id)).toBe(1);
+  const extract = vi.fn<Extractor>();
+  await new MemoryWorker(store, config, extract).tick(true);
+  expect(extract).not.toHaveBeenCalled();
+  expect(store.jobs()[0]).toMatchObject({
+    state: "done",
+    review: { processed: 2, total: 2 },
+  });
+  expect(await store.get(original.id)).toEqual(original);
+  expect(
+    await store.list({ scope: "project", projectId: project.id }),
+  ).toMatchObject([{ content: add.content }]);
+});
+
+test("全局复盘保留项目来源 ID，不公开原话或用低置信来源修订生效记录", async ({
+  store,
+}) => {
+  const project = await addTestProject(store, "source-scope");
+  const original = await store.create(
+    CreateMemorySchema.parse({
+      title: "已有通用政策",
+      content: "已有的全局正文",
+      scope: "global",
+    }),
+  );
+  const privateContent = "项目内部代号只供项目查看";
+  reviewTurn(store, [
+    event({
+      id: "private-user",
+      projectId: project.id,
+      content: privateContent,
+    }),
+    event({
+      id: "private-reply",
+      projectId: project.id,
+      role: "assistant",
+      content: privateContent,
+    }),
+  ]);
+  await new MemoryWorker(store, config, async () => ({
+    outcome: "settled",
+    proposals: [
+      proposal({ sourceIds: ["private-user"], content: "新的全局正文" }),
+      proposal({
+        sourceIds: ["private-reply"],
+        certainty: "uncertain",
+        content: original.content,
+      }),
+    ],
+  })).tick(true);
+  expect.soft(await store.get(original.id)).toEqual(original);
+  const created = (await store.list()).find(
+    (memory) => memory.id !== original.id,
+  )!;
+  expect(created.sources[0].id).toBe("private-user");
+  expect(await readFile(created.file, "utf8")).not.toContain(privateContent);
+});
+
+test("保留 Markdown 重建 SQLite 后，不同项目的首个提炼任务可写相同正文", async ({
+  home,
+  store,
+}) => {
+  const first = await addTestProject(store, "restore-first");
+  const second = await addTestProject(store, "restore-second");
+  const extract: Extractor = async (events) => ({
+    outcome: "settled",
+    proposals: [
+      proposal({
+        scope: "project",
+        sourceIds: [events.find((item) => item.role === "user")!.id],
+      }),
+    ],
+  });
+  reviewTurn(store, [event({ projectId: first.id })]);
+  await new MemoryWorker(store, config, extract).tick(true);
+  const [before] = await store.list({ projectId: first.id });
+  expect(before).toBeDefined();
+  expect(store.jobs()[0].id).toBe(1);
+  store.close();
+  await rename(join(home, "runtime.db"), join(home, "runtime-before.db"));
+  const rebuilt = await MemoryStore.open(home);
+  try {
+    reviewTurn(rebuilt, [
+      event({
+        id: "after-rebuild",
+        sessionId: "second-session",
+        projectId: second.id,
+      }),
+    ]);
+    await new MemoryWorker(rebuilt, config, extract).tick(true);
+    expect(rebuilt.jobs()).toMatchObject([{ id: 1, state: "done" }]);
+    const [after] = await rebuilt.list({ projectId: second.id });
+    expect(after).toMatchObject({
+      projectId: second.id,
+      content: before.content,
+    });
+    expect(after.id).not.toBe(before.id);
+  } finally {
+    rebuilt.close();
+  }
+});

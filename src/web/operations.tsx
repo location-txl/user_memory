@@ -33,6 +33,7 @@ const jobStateKeys: Partial<Record<string, keyof typeof en>> = {
   running: "extracting",
   done: "done",
   failed: "failed",
+  skipped: "skipped",
 };
 export function Operations({
   page,
@@ -432,7 +433,7 @@ function Settings({ status, onChange }: { status?: Status; onChange(): void }) {
                   <ExtractionUsageList rows={j.usageByModel} />
                 )}
                 {j.error && <pre>{j.error}</pre>}
-                {j.state === "failed" && (
+                {j.state === "failed" && j.turn_id !== null && (
                   <button
                     onClick={() => {
                       void api(`/jobs/${j.id}/retry`, { method: "POST" }).then(

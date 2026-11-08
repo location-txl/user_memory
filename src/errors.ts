@@ -13,6 +13,8 @@ export const errorMessages = {
   EVIDENCE_NOT_FOUND:
     "Evidence was not captured, has been withdrawn, or is outside the current project. Check the memory's saved source excerpt.",
   MEMORY_CONFLICT: "Memory has changed. Read it again before editing.",
+  MEMORY_CORRECTION_TARGET_MISSING:
+    "This older correction has no target. Open and edit the original memory.",
   MEMORY_WITHDRAWN:
     "Memory has been withdrawn. Create a new record to remember it again.",
   WORKER_UNAVAILABLE: "The extraction worker is not running.",

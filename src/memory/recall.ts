@@ -1,13 +1,47 @@
 import { type RecallInput, type Memory } from "../contracts.js";
 import type { MemoryStore } from "./store.js";
+import { terms } from "./files.js";
+
+const commonPromptWords = new Set(
+  "帮我 一下 修改 调整 优化 修复 更新 需要 使用 处理 项目 保留 检查 测试 the a an to for of in on and fix change update improve add remove edit help make keep check test".split(
+    " ",
+  ),
+);
 
 export async function recall(store: MemoryStore, input: RecallInput) {
   const projectId =
     input.projectId ?? (await store.resolveProject(input.cwd, true))?.id;
   store.requireProject(projectId);
   const all = await store.list({ projectId, status: "active" });
-  const relevant = input.query.trim()
-    ? await store.list({ projectId, status: "active", query: input.query })
+  const words = terms(input.query).split(" ").filter(Boolean);
+  const keywords = new Set(
+    (words.length === 1
+      ? words
+      : words.filter(
+          (word) =>
+            !/^\p{Script=Han}$/u.test(word) && !commonPromptWords.has(word),
+        )
+    ).slice(0, 40),
+  );
+  const relevant = keywords.size
+    ? (
+        await store.list({
+          projectId,
+          status: "active",
+          query: [...keywords].join(" "),
+        })
+      ).filter(
+        (memory) =>
+          words.length === 1 ||
+          terms(memory.title)
+            .split(" ")
+            .some((word) => keywords.has(word)) ||
+          new Set(
+            terms(memory.content)
+              .split(" ")
+              .filter((word) => keywords.has(word)),
+          ).size >= 2,
+      )
     : [];
   const binding = `${input.agent}:${input.sessionId}:${projectId ?? "global"}`;
   const receipt = store.db
@@ -17,6 +51,11 @@ export async function recall(store: MemoryStore, input: RecallInput) {
     ? JSON.parse(receipt.versions)
     : {};
   const currentById = new Map(all.map((m) => [m.id, m]));
+  const pinned = all.filter((m) => m.alwaysRecall);
+  const eligible = new Set([...pinned, ...relevant].map((m) => m.id));
+  const selected = new Map(
+    [...pinned, ...relevant.slice(0, 8)].map((m) => [m.id, m]),
+  );
   const pending = new Map<string, { memory?: Memory; change?: string }>();
   for (const [id, etag] of Object.entries(previous)) {
     const current = currentById.get(id);
@@ -26,14 +65,11 @@ export async function recall(store: MemoryStore, input: RecallInput) {
       });
     else if (current.etag !== etag)
       pending.set(id, {
-        memory: current,
-        change: `记忆 ${id} 已更新，此前版本已失效。以下若仅有索引，须先用 memory_get 读取新版。`,
+        memory: eligible.has(id) ? current : undefined,
+        change: `记忆 ${id} 已更新，此前版本已失效。${eligible.has(id) ? "以下若仅有索引，须先用 memory_get 读取新版。" : ""}`,
       });
   }
-  const stable = all
-    .filter((m) => m.kind === "preference" || m.kind === "constraint")
-    .slice(0, 12);
-  for (const m of [...relevant.slice(0, 8), ...stable]) {
+  for (const m of selected.values()) {
     if (!pending.has(m.id)) pending.set(m.id, { memory: m });
   }
   const header = [

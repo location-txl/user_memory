@@ -26,6 +26,7 @@ export const MemoryMetaSchema = z
     updatedAt: z.string(),
     sources: z.array(SourceSchema),
     reason: z.string().optional(),
+    alwaysRecall: z.boolean().optional(),
   })
   .refine(
     (m) => (m.scope === "global" ? !m.projectId : !!m.projectId),
@@ -50,18 +51,28 @@ export const CreateMemorySchema = z
     status: z.enum(["active", "candidate"]).default("active"),
     sources: z.array(SourceSchema).default([]),
     reason: z.string().optional(),
+    alwaysRecall: z.boolean().optional(),
   })
   .refine((m) => (m.scope === "global" ? !m.projectId : !!m.projectId), {
     message: "记忆范围与项目不匹配",
     params: { rule: "scope_project_mismatch" },
   });
 export type CreateMemory = z.infer<typeof CreateMemorySchema>;
-export const EventSchema = z.object({
-  id: z.string().min(1).max(300),
+const EventBindingSchema = z.object({
   agent: AgentSchema,
   sessionId: z.string().min(1).max(300),
   projectId: Id.optional(),
   cwd: z.string().optional(),
+});
+const TurnId = z.string().min(1).max(300);
+export const TurnEndSchema = EventBindingSchema.extend({
+  turnId: TurnId,
+  at: z.iso.datetime(),
+});
+export type TurnEnd = z.infer<typeof TurnEndSchema>;
+export const EventSchema = EventBindingSchema.extend({
+  id: z.string().min(1).max(300),
+  turnId: TurnId.optional(),
   branchId: z.string().optional(),
   role: z.enum(["user", "assistant", "tool"]),
   content: z.string().min(1).max(32000),
@@ -70,6 +81,10 @@ export const EventSchema = z.object({
   worker: z.boolean().default(false),
 });
 export type MemoryEvent = z.infer<typeof EventSchema>;
+export const IngestSchema = z.union([
+  z.array(EventSchema),
+  z.object({ events: z.array(EventSchema), turnEnd: TurnEndSchema }),
+]);
 export type Project = {
   id: string;
   memoryDirectory: string;
@@ -95,10 +110,13 @@ export const ProposalSchema = z.object({
   kind: z.enum(["preference", "constraint", "decision", "lesson"]),
   sourceIds: z.array(z.string()).min(1),
   certainty: z.enum(["supported", "uncertain"]),
+  basis: z.enum(["explicit_policy", "adopted_decision", "verified_lesson"]),
   reason: z.string(),
 });
 export const ExtractionSchema = z.object({
+  outcome: z.enum(["pending", "settled"]),
   proposals: z.array(ProposalSchema).max(24),
 });
+export type Extraction = z.infer<typeof ExtractionSchema>;
 export type Proposal = z.infer<typeof ProposalSchema>;
 export { AppError } from "./errors.js";

@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 import { atomicWrite, initHome, readOptional } from "../config.js";
 import { MemoryClient } from "../client.js";
-import { type Agent, type MemoryEvent } from "../contracts.js";
+import { type Agent, type MemoryEvent, type TurnEnd } from "../contracts.js";
 import { fingerprint, isMemoryData, scrub } from "../memory/files.js";
 
 const HookInput = z
@@ -15,9 +15,11 @@ const HookInput = z
     hook_event_name: z.string(),
     cwd: z.string().optional(),
     prompt: z.string().optional(),
-    last_assistant_message: z.string().optional(),
+    last_assistant_message: z.string().nullish(),
     transcript_path: z.string().nullable().optional(),
     turn_id: z.string().optional(),
+    turnId: z.string().optional(),
+    prompt_id: z.string().nullish(),
   })
   .passthrough();
 const TranscriptLine = z
@@ -33,6 +35,13 @@ const TranscriptLine = z
 const Message = z
   .object({ role: z.enum(["user", "assistant", "tool"]), content: z.unknown() })
   .passthrough();
+const ClaudeTurn = z.object({
+  id: z.string(),
+  startedAt: z.iso.datetime(),
+  cwd: z.string().optional(),
+  stopped: z.boolean().optional(),
+});
+type ClaudeTurn = z.infer<typeof ClaudeTurn>;
 export function plainText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -52,6 +61,7 @@ export function transcriptEvent(
   sessionId: string,
   offset: number,
   cwd?: string,
+  claudeTurns?: (ClaudeTurn | undefined)[],
 ): MemoryEvent | undefined {
   let json: unknown;
   try {
@@ -87,27 +97,62 @@ export function transcriptEvent(
       : row.message;
   const message = Message.safeParse(value);
   if (!message.success) return;
-  const content = plainText(message.data.content);
+  const toolResults =
+    agent === "claude" &&
+    message.data.role === "user" &&
+    Array.isArray(message.data.content)
+      ? message.data.content.flatMap((block) => {
+          const parsed = z
+            .object({
+              type: z.literal("tool_result"),
+              content: z.unknown(),
+              is_error: z.boolean().optional(),
+            })
+            .safeParse(block);
+          if (!parsed.success) return [];
+          const text = plainText(parsed.data.content);
+          return text && !isMemoryData(text)
+            ? [`工具结果${parsed.data.is_error ? "（失败）" : ""}：${text}`]
+            : [];
+        })
+      : [];
+  const content = toolResults.length
+    ? toolResults.join("\n")
+    : plainText(message.data.content);
   if (!content || isMemoryData(content)) return;
+  const timestamp = Date.parse(row.timestamp ?? "");
+  const turn = claudeTurns?.find(
+    (candidate) => candidate && timestamp >= Date.parse(candidate.startedAt),
+  );
   return {
     id: `${agent}:${sessionId}:${row.uuid ?? row.id ?? fingerprint(`${offset}:${line}`).slice(0, 24)}`,
     agent,
     sessionId,
-    cwd,
-    role: message.data.role,
+    cwd: turn ? turn.cwd : cwd,
+    turnId: turn?.id,
+    role: toolResults.length ? "tool" : message.data.role,
     content: scrub(content).slice(0, 32000),
     at: row.timestamp ?? new Date().toISOString(),
     injected: false,
     worker: false,
   };
 }
-export async function spoolEvents(home: string, events: MemoryEvent[]) {
-  events = events.filter((event) => !isMemoryData(event.content));
-  if (!events.length || process.env.UMEM_WORKER === "1") return;
+export async function spoolEvents(
+  home: string,
+  events: MemoryEvent[],
+  turnEnd?: TurnEnd,
+) {
+  events = events
+    .filter((event) => !isMemoryData(event.content))
+    .map((event) => ({
+      ...event,
+      content: scrub(event.content).slice(0, 32000),
+    }));
+  if ((!events.length && !turnEnd) || process.env.UMEM_WORKER === "1") return;
   await initHome(home);
   await atomicWrite(
     join(home, "spool", `${randomUUID()}.json`),
-    JSON.stringify(events.map((e) => ({ ...e, content: scrub(e.content) }))),
+    JSON.stringify(turnEnd ? { events, turnEnd } : events),
   );
 }
 export async function runHook(home: string, agent: Agent, raw: unknown) {
@@ -125,36 +170,67 @@ export async function runHook(home: string, agent: Agent, raw: unknown) {
   const cursorSchema = z.object({
     path: z.string().optional(),
     offset: z.number().default(0),
+    turnId: z.string().optional(),
+    cwd: z.string().optional(),
+    claudeTurn: ClaudeTurn.optional(),
+    previousClaudeTurn: ClaudeTurn.optional(),
   });
   const old = await readOptional(cursorPath);
   let cursor = cursorSchema.parse(old ? JSON.parse(old) : {});
   const events: MemoryEvent[] = [];
   const start = input.hook_event_name === "SessionStart";
   const prompt = input.hook_event_name === "UserPromptSubmit";
-  const add = (role: "user" | "assistant", content: string) =>
+  const stop = input.hook_event_name === "Stop";
+  const end = input.hook_event_name === "SessionEnd";
+  const stopFailure = input.hook_event_name === "StopFailure";
+  const turnId = input.turn_id ?? input.prompt_id ?? input.turnId;
+  const at = new Date().toISOString();
+  const claude = agent === "claude";
+  const previous = cursor.claudeTurn;
+  const next =
+    claude && prompt && turnId && turnId !== previous?.id
+      ? { id: turnId, startedAt: at, cwd: input.cwd }
+      : undefined;
+  const claudeTurns = claude
+    ? [next, previous, cursor.previousClaudeTurn]
+    : undefined;
+  const assistantId = (id: string, content: string) =>
+    `${agent}:${sessionId}:${id}:assistant:${fingerprint(content).slice(0, 24)}`;
+  const add = (role: "user" | "assistant", rawContent: string) => {
+    const content = scrub(rawContent).slice(0, 32000);
     events.push({
-      id: `${agent}:${sessionId}:${input.turn_id ?? randomUUID()}:${role}`,
+      id:
+        role === "assistant" && turnId
+          ? assistantId(turnId, content)
+          : `${agent}:${sessionId}:${turnId ?? randomUUID()}:${role}`,
       agent,
       sessionId,
+      turnId,
       cwd: input.cwd,
       role,
-      content: scrub(content).slice(0, 32000),
-      at: new Date().toISOString(),
+      content,
+      at,
       injected: false,
       worker: false,
     });
+  };
   // 用户证据只取提交 hook 的原始 prompt，避免把恢复的历史或 AGENTS.md 当成新发言。
   if (prompt && input.prompt) add("user", input.prompt);
-  if (agent === "zcode") {
-    if (input.hook_event_name === "Stop" && input.last_assistant_message)
-      add("assistant", input.last_assistant_message);
-  } else if (input.transcript_path) {
-    const size = (await stat(input.transcript_path)).size;
-    if (!old || cursor.path !== input.transcript_path || size < cursor.offset) {
+  if (agent !== "zcode" && input.transcript_path) {
+    const info = await stat(input.transcript_path).catch(
+      (error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+      },
+    );
+    const size = info?.size ?? 0;
+    if (
+      !old ||
+      cursor.path !== input.transcript_path ||
+      size < cursor.offset ||
+      !info
+    ) {
       // 首次接入只从当前边界开始，不能顺带导入整段历史会话。
-      cursor = { path: input.transcript_path, offset: size };
-      if (input.hook_event_name === "Stop" && input.last_assistant_message)
-        add("assistant", input.last_assistant_message);
+      cursor = { ...cursor, path: input.transcript_path, offset: size };
     } else {
       const handle = await open(input.transcript_path, "r");
       try {
@@ -181,8 +257,23 @@ export async function runHook(home: string, agent: Agent, raw: unknown) {
               sessionId,
               cursor.offset,
               input.cwd,
+              claudeTurns,
             );
-            if (event && event.role !== "user") events.push(event);
+            if (event && event.role !== "user") {
+              if (!claude) {
+                // Prompt 提交前读到的 Codex transcript 尾部属于上一轮。
+                event.turnId =
+                  stop && cursor.turnId === turnId
+                    ? turnId
+                    : prompt
+                      ? cursor.turnId
+                      : undefined;
+                if (prompt && event.turnId) event.cwd = cursor.cwd;
+              }
+              if (event.turnId && event.role === "assistant")
+                event.id = assistantId(event.turnId, event.content);
+              events.push(event);
+            }
             cursor.offset += Buffer.byteLength(line + "\n");
             pending = pending.slice(index + 1);
           }
@@ -191,11 +282,42 @@ export async function runHook(home: string, agent: Agent, raw: unknown) {
         await handle.close();
       }
     }
-  } else {
-    if (input.hook_event_name === "Stop" && input.last_assistant_message)
+  }
+  if (stop && input.last_assistant_message) {
+    const content = scrub(input.last_assistant_message).slice(0, 32000);
+    if (
+      !events.some(
+        (event) =>
+          event.role === "assistant" &&
+          event.turnId === turnId &&
+          event.content === content,
+      )
+    )
       add("assistant", input.last_assistant_message);
   }
-  await spoolEvents(home, events);
+  let turnEnd: TurnEnd | undefined;
+  if (claude) {
+    // Claude 的其他 Stop hooks 仍可要求续跑。下一次提交或会话退出才确认边界。
+    if (next || end) {
+      if (previous?.stopped)
+        turnEnd = {
+          agent,
+          sessionId,
+          turnId: previous.id,
+          cwd: previous.cwd,
+          at,
+        };
+      cursor.claudeTurn = next;
+      if (previous) cursor.previousClaudeTurn = previous;
+    } else if (previous && previous.id === turnId && (stop || stopFailure)) {
+      cursor.claudeTurn = { ...previous, stopped: stop };
+    }
+  } else {
+    if (start || prompt) cursor = { ...cursor, turnId, cwd: input.cwd };
+    if (stop && turnId)
+      turnEnd = { agent, sessionId, turnId, cwd: input.cwd, at };
+  }
+  await spoolEvents(home, events, turnEnd);
   await atomicWrite(cursorPath, JSON.stringify(cursor));
   if (!start && !prompt) return {};
   const result = await client.request<{ context: string }>("/recall", {

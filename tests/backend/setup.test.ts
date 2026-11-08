@@ -29,6 +29,18 @@ test.each<Host>(["codex", "zcode", "claude", "pi", "deepseek", "hermes"])(
     for (const c of plan.changes)
       expect(await readOptional(c.path)).toBeUndefined();
     await applySetup(home, plan);
+    if (host === "claude") {
+      const settings = JSON.parse(
+        await readFile(join(target, ".claude", "settings.json"), "utf8"),
+      );
+      expect(Object.keys(settings.hooks)).toEqual([
+        "SessionStart",
+        "UserPromptSubmit",
+        "Stop",
+        "StopFailure",
+        "SessionEnd",
+      ]);
+    }
     expect((await planSetup(home, host, target)).changes).toEqual([]);
     const preview = await uninstall(home, host);
     expect(preview.applied).toBe(false);

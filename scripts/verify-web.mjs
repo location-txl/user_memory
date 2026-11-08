@@ -23,9 +23,24 @@ await atomicWrite(join(home, "config.json"), JSON.stringify(config));
 const interrupted = await MemoryStore.open(home);
 const job = interrupted.db
   .prepare(
-    "INSERT INTO jobs (agent, session_id, state, updated_at) VALUES (?, ?, 'running', ?)",
+    "INSERT INTO jobs (agent, session_id, turn_id, closed_at, state, updated_at) VALUES (?, ?, 'interrupted-turn', ?, 'running', ?)",
   )
-  .run("codex", "interrupted", new Date().toISOString());
+  .run(
+    "codex",
+    "interrupted",
+    new Date().toISOString(),
+    new Date().toISOString(),
+  );
+const legacy = interrupted.db
+  .prepare(
+    "INSERT INTO jobs (agent, session_id, state, error, updated_at) VALUES ('codex', 'legacy', 'failed', 'model offline', ?)",
+  )
+  .run(new Date().toISOString());
+const retryable = interrupted.db
+  .prepare(
+    "INSERT INTO jobs (agent, session_id, turn_id, closed_at, state, updated_at) VALUES ('codex', 'retryable', 'retryable-turn', ?, 'failed', ?)",
+  )
+  .run(new Date().toISOString(), new Date().toISOString());
 interrupted.recordExtractionUsage(Number(job.lastInsertRowid), "test-model", {
   inputTokens: 1_234_000_000,
   cachedInputTokens: 1_200_000,
@@ -115,6 +130,17 @@ try {
     path: join(output, "memory-desktop.png"),
     fullPage: true,
   });
+  await page.getByRole("button", { name: "设为常驻", exact: true }).click();
+  const unpin = page.getByRole("button", { name: "取消常驻", exact: true });
+  await unpin.waitFor();
+  assert.equal(await unpin.getAttribute("aria-pressed"), "true");
+  const pinned = await client.request("/recall", {
+    method: "POST",
+    body: { query: "" },
+  });
+  assert.ok(pinned.context.includes("默认用中文沟通"));
+  await unpin.click();
+  await page.getByRole("button", { name: "设为常驻", exact: true }).waitFor();
   await page.getByRole("button", { name: "编辑", exact: true }).click();
   await page
     .getByRole("textbox", { name: "内容", exact: true })
@@ -194,6 +220,20 @@ try {
   for (const language of ["zh-CN", "en"]) {
     await page.locator(".language-select select").selectOption(language);
     const zh = language === "zh-CN";
+    const legacyRow = page
+      .locator(".jobs article")
+      .filter({ hasText: `#${legacy.lastInsertRowid} codex` });
+    const retryableRow = page
+      .locator(".jobs article")
+      .filter({ hasText: `#${retryable.lastInsertRowid} codex` });
+    const retryLabel = zh ? "重试任务" : "Retry job";
+    await retryableRow
+      .getByRole("button", { name: retryLabel, exact: true })
+      .waitFor({ timeout: 5000 });
+    assert.equal(await legacyRow.getByRole("button").count(), 0);
+    await legacyRow
+      .getByText(zh ? "已跳过" : "Skipped", { exact: true })
+      .waitFor({ timeout: 5000 });
     for (const name of zh
       ? ["按模型统计提炼用量", "最近提炼任务"]
       : ["Extraction usage by model", "Recent extraction jobs"]) {
@@ -239,7 +279,7 @@ try {
   }
   await page.locator(".language-select select").selectOption("zh-CN");
   await page.getByLabel("模型（留空使用默认模型）").fill("");
-  await page.getByLabel("会话空闲多久后提炼（秒）").fill("45");
+  await page.getByLabel("轮次结束后的收尾缓冲（秒）").fill("45");
   await page.getByRole("button", { name: "保存设置", exact: true }).click();
   await page.getByText("设置已保存").waitFor();
   const savedConfig = await client.request("/config");
@@ -410,6 +450,7 @@ try {
           "Import preview and approval",
           "Persistent settings",
           "Extraction token usage by requested model",
+          "Legacy extraction jobs are skipped and cannot be retried",
           "Chinese content and search are preserved",
           "Persistent English and Chinese UI selection",
           "No horizontal overflow on mobile",

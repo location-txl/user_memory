@@ -6,7 +6,12 @@ import { CreateMemorySchema, RecallSchema } from "../../../src/contracts.js";
 import { recall } from "../../../src/memory/recall.js";
 
 const input = (content = "默认用中文沟通") =>
-  CreateMemorySchema.parse({ title: "沟通语言", content, scope: "global" });
+  CreateMemorySchema.parse({
+    title: "沟通语言",
+    content,
+    scope: "global",
+    alwaysRecall: true,
+  });
 describe("范围、召回与撤回", () => {
   test("长记忆只提供索引和完整读取提示，避免遗漏末尾条件", async ({
     store,
@@ -224,7 +229,11 @@ test("超预算的撤回通知不会被提前确认，下次召回继续发送",
 });
 
 test("空白查询不会把不相关的决策注入上下文", async ({ store }) => {
-  await store.create({ ...input("部署决策"), kind: "decision" });
+  await store.create({
+    ...input("部署决策"),
+    kind: "decision",
+    alwaysRecall: false,
+  });
   expect(
     (await recall(store, RecallSchema.parse({ query: "  " }))).context,
   ).toBe("");
@@ -245,22 +254,90 @@ test("大量更新分批通知，每条都失效旧正文且不丢失后续更�
   store.db
     .prepare("INSERT INTO recalls VALUES (?, ?)")
     .run("manual:updates:global", JSON.stringify(previous));
-  const request = RecallSchema.parse({ sessionId: "updates" });
+  const request = RecallSchema.parse({ sessionId: "updates", query: "条件" });
   const notified = new Set<string>();
   for (let i = 0; i < 4; i++) {
     const result = await recall(store, request);
     expect(result.context.length).toBeLessThanOrEqual(6000);
-    expect(result.changes).toHaveLength(result.memories.length);
     if (i === 0) expect(result.memories.length).toBeLessThan(30);
-    for (const m of result.memories) {
-      expect(notified.has(m.id)).toBe(false);
-      expect(m.delivery).toBe("index");
-      expect(result.changes).toContainEqual(
-        expect.stringContaining(`记忆 ${m.id} 已更新，此前版本已失效`),
-      );
-      notified.add(m.id);
+    for (const change of result.changes) {
+      expect(notified.has(change)).toBe(false);
+      expect(change).toContain("已更新，此前版本已失效");
+      notified.add(change);
     }
+    expect(result.memories.every((m) => m.delivery === "index")).toBe(true);
   }
   expect(notified.size).toBe(30);
   expect((await recall(store, request)).changes).toEqual([]);
+});
+
+test("项目 CI 约束只在相关查询注入，纠正通知不带出无关正文", async ({
+  store,
+}) => {
+  const project = await addTestProject(store, "ci");
+  const other = await addTestProject(store, "other");
+  const m = await store.create({
+    title: "纯文档变更跳过 CI",
+    content: "优化 GitHub Actions 时保留必要测试，必需检查须通过。",
+    kind: "constraint",
+    scope: "project",
+    projectId: project.id,
+    status: "active",
+    sources: [],
+  });
+  const request = RecallSchema.parse({ projectId: project.id });
+  expect(
+    (await recall(store, { ...request, query: "帮我优化一下按钮的圆角配色" }))
+      .context,
+  ).toBe("");
+  for (const query of [
+    "帮我修改按钮文案，保留现有动效",
+    "帮我检查一下按钮的圆角配色",
+    "改一下按钮，再补个回归测试",
+  ])
+    expect.soft((await recall(store, { ...request, query })).context).toBe("");
+  expect(
+    (await recall(store, { ...request, projectId: other.id, query: "CI" }))
+      .context,
+  ).toBe("");
+  expect(
+    (await recall(store, { ...request, query: "CI" })).memories[0].id,
+  ).toBe(m.id);
+  await store.revise(
+    m.id,
+    m.revision,
+    { content: "CI 检查策略已修订。" },
+    m.etag,
+  );
+  const next = await recall(store, { ...request, query: "按钮圆角配色" });
+  expect(next.changes).toHaveLength(1);
+  expect(next.memories).toEqual([]);
+  expect(next.context).not.toContain("CI");
+});
+
+test("单字精确查询和常驻列表均可用，常驻由上下文预算限制", async ({
+  store,
+}) => {
+  const lock = await store.create({
+    ...input("进程互斥"),
+    title: "锁",
+    alwaysRecall: false,
+  });
+  expect
+    .soft(
+      (await recall(store, RecallSchema.parse({ query: "锁" }))).memories.map(
+        (m) => m.id,
+      ),
+    )
+    .toEqual([lock.id]);
+  const pinned = [];
+  for (let n = 0; n < 13; n++)
+    pinned.push(
+      await store.create({ ...input(`记住约定 ${n}`), title: `约定 ${n}` }),
+    );
+  const result = await recall(store, RecallSchema.parse({ query: "" }));
+  expect(result.context.length).toBeLessThanOrEqual(6000);
+  expect(new Set(result.memories.map((m) => m.id))).toEqual(
+    new Set(pinned.map((m) => m.id)),
+  );
 });

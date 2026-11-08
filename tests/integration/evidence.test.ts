@@ -15,7 +15,7 @@ import { createMcp } from "../../src/mcp.js";
 import { runHook } from "../../src/adapters/hooks.js";
 import { EventSchema, CreateMemorySchema } from "../../src/contracts.js";
 import { MemoryStore } from "../../src/memory/store.js";
-import { MemoryWorker } from "../../src/memory/worker.js";
+import { MemoryWorker, type Extractor } from "../../src/memory/worker.js";
 import { searchEvidence } from "../../src/memory/evidence.js";
 import { encodeMemory } from "../../src/memory/files.js";
 
@@ -70,7 +70,6 @@ test("证据 CLI 输出经真实 hook 回流后不能绕过撤回，普通工具
   const { store } = daemon;
   const original = event("original", "replayneedle 旧构建经验");
   store.ingest([original]);
-  store.db.exec("UPDATE jobs SET state='done'");
   const memory = await store.create(
     CreateMemorySchema.parse({
       title: "旧经验",
@@ -90,13 +89,18 @@ test("证据 CLI 输出经真实 hook 回流后不能绕过撤回，普通工具
   );
   const transcript = join(home, "transcript.jsonl");
   await writeFile(transcript, "");
+  const binding = {
+    session_id: "reader",
+    turn_id: "reader-turn",
+    transcript_path: transcript,
+  };
   const stop = () =>
-    runHook(home, "codex", {
-      session_id: "reader",
-      hook_event_name: "Stop",
-      transcript_path: transcript,
-    });
-  await stop();
+    runHook(home, "codex", { ...binding, hook_event_name: "Stop" });
+  await runHook(home, "codex", {
+    ...binding,
+    hook_event_name: "UserPromptSubmit",
+    prompt: "核对构建",
+  });
   const { stdout } = await cli(home, "evidence", "get", original.id);
   expect(stdout).toContain(original.content);
   const outputs = [stdout, "independentneedle 当前真实构建结果"];
@@ -128,10 +132,12 @@ test("证据 CLI 输出经真实 hook 回流后不能绕过撤回，普通工具
   ).toMatchObject({ total: 1 });
   // 即使宿主未在 hook 层过滤，公共入库入口也不能把它当作新证据。
   expect(store.ingest([event("direct-replay", stdout)])).toBe(0);
-  const extract = vi.fn(async (events) => {
-    expect(events).toHaveLength(1);
-    expect(events[0].content).toContain("independentneedle");
-    return { proposals: [] };
+  const extract = vi.fn<Extractor>(async (events) => {
+    expect(events).toHaveLength(2);
+    expect(events.find((e) => e.role === "tool")?.content).toContain(
+      "independentneedle",
+    );
+    return { outcome: "settled", proposals: [] };
   });
   await new MemoryWorker(store, daemon.worker.config, extract).tick(true);
   expect(extract).toHaveBeenCalledOnce();

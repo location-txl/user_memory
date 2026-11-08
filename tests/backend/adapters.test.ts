@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { registerPi } from "../../src/adapters/pi.js";
 import { apply } from "../../src/adapters/deepseek.js";
 import { MemoryClient } from "../../src/client.js";
+import { MemoryStore } from "../../src/memory/store.js";
 let home: string;
 beforeEach(async () => {
   home = await mkdtemp(join(tmpdir(), "umem-adapter-"));
@@ -193,3 +194,150 @@ test("DeepSeek 召回失败时原样返回宿主决定", async () => {
   expect(result).toBe(decision);
   expect(report).toHaveBeenCalledOnce();
 });
+
+test("Pi 只对真实用户运行的非中止收尾标记轮次", async () => {
+  const request = vi
+    .spyOn(MemoryClient.prototype, "request")
+    .mockResolvedValue({ context: "" });
+  const handlers = new Map<string, Function>();
+  registerPi(
+    {
+      on: (name, handler) => {
+        handlers.set(name, handler);
+      },
+    },
+    home,
+  );
+  const ctx = {
+    cwd: home,
+    sessionManager: { getSessionId: () => "pi-settle" },
+  };
+  const emit = (name: string, event: unknown) =>
+    handlers.get(name)!(event, ctx);
+  await emit("before_agent_start", { messageType: "custom", message: {} });
+  expect(request).not.toHaveBeenCalled();
+  await emit("agent_settled", { aborted: false });
+  await emit("before_agent_start", { messageType: "user", prompt: "已中止" });
+  await emit("message_end", {
+    message: { role: "user", timestamp: 1, content: "已中止" },
+  });
+  await emit("agent_settled", { aborted: true });
+  await emit("before_agent_start", { messageType: "user", prompt: "继续执行" });
+  await emit("message_end", {
+    message: { role: "user", timestamp: 2, content: "继续执行" },
+  });
+  await emit("message_end", {
+    message: { role: "toolResult", timestamp: 3, content: "检查完成" },
+  });
+  await emit("agent_settled", { aborted: false });
+  const store = await MemoryStore.open(home);
+  try {
+    await store.drainSpool();
+    expect(store.jobs()).toHaveLength(1);
+    expect(store.events(store.jobs()[0].id).map((e) => e.role)).toEqual([
+      "user",
+      "tool",
+    ]);
+  } finally {
+    store.close();
+  }
+});
+
+test("DeepSeek 按原生轮次关联用户与结果，只标记 completed", async () => {
+  const handlers = new Map<string, Function>();
+  apply(
+    {
+      on: (name: string, handler: Function) => {
+        handlers.set(name, handler);
+      },
+    },
+    { home },
+  );
+  const session = { id: "dsh-turn", header: { cwd: home } };
+  let seq = 0;
+  const emit = (type: string, data: object) =>
+    handlers.get("session/event")!(session, {
+      type,
+      seq: ++seq,
+      time: seq * 1000,
+      data,
+    });
+  await emit("turn/start", { turn: 1 });
+  await emit("user/message", { content: "需求", source: { kind: "user" } });
+  await emit("turn/end", { turn: 1, reason: { kind: "aborted" } });
+  await emit("turn/start", { turn: 2 });
+  await emit("user/message", { content: "请执行", source: { kind: "user" } });
+  await emit("tool/result", {
+    turn: 2,
+    message: { content: [{ type: "text", text: "已验证" }] },
+  });
+  await emit("assistant/message", {
+    turn: 2,
+    message: {
+      content: [
+        { type: "text", text: "完成" },
+        { type: "reasoning", text: "隐藏推理" },
+      ],
+    },
+  });
+  await emit("turn/end", { turn: 2, reason: { kind: "completed" } });
+  const store = await MemoryStore.open(home);
+  try {
+    await store.drainSpool();
+    expect(store.jobs()).toMatchObject([{ turn_id: "2" }]);
+    expect(store.events(store.jobs()[0].id).map((e) => e.content)).toEqual([
+      "请执行",
+      "已验证",
+      "完成",
+    ]);
+  } finally {
+    store.close();
+  }
+});
+
+test.each(["pi", "deepseek"])(
+  "%s 截断长工具结果前脱敏转义 JSON",
+  async (host) => {
+    const handlers = new Map<string, Function>();
+    const extension = {
+      on: (name: string, handler: Function) => handlers.set(name, handler),
+    };
+    const canary = "synthetic-password-value";
+    const content = JSON.stringify({
+      output: `${"x".repeat(31900)} ${JSON.stringify({ password: canary })} ${"x".repeat(500)}`,
+    });
+    expect(content.indexOf(canary) + canary.length).toBeLessThan(32000);
+    if (host === "pi") {
+      registerPi(extension, home);
+      await handlers.get("message_end")!(
+        { message: { role: "toolResult", toolCallId: "call", content } },
+        { cwd: home, sessionManager: { getSessionId: () => "pi-long" } },
+      );
+    } else {
+      apply(extension, { home });
+      await handlers.get("session/event")!(
+        { id: "deepseek-long", header: { cwd: home } },
+        {
+          type: "tool/result",
+          seq: 1,
+          time: 1000,
+          data: { turn: 1, message: { content } },
+        },
+      );
+    }
+    const [captured] = await events();
+    expect(captured.content).not.toContain(canary);
+    expect(captured.content).toContain("[已隐去凭据]");
+    expect(captured.content.length).toBeLessThanOrEqual(32000);
+    const store = await MemoryStore.open(home);
+    try {
+      await store.drainSpool();
+      const row = store.db
+        .prepare("SELECT data FROM events WHERE id=?")
+        .get(captured.id) as { data: string };
+      expect(JSON.parse(row.data).content).toBe(captured.content);
+    } finally {
+      store.close();
+    }
+  },
+);

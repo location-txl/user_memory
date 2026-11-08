@@ -15,11 +15,14 @@ import { z } from "zod";
 import {
   AppError,
   Id,
+  IngestSchema,
   type CreateMemory,
   type Memory,
   type MemoryEvent,
   type MemoryMeta,
   type Project,
+  type Proposal,
+  type TurnEnd,
 } from "../contracts.js";
 import { atomicWrite, initHome, readOptional } from "../config.js";
 import { errorMessages } from "../errors.js";
@@ -49,6 +52,24 @@ export type Job = {
   state: string;
   error: string | null;
   updated_at: string;
+  turn_id: string | null;
+  closed_at: string | null;
+};
+type MemoryChanges = Partial<
+  Pick<
+    Memory,
+    "title" | "content" | "status" | "reason" | "sources" | "alwaysRecall"
+  >
+>;
+export const legacyCorrectionReason = "旧记忆已变化或证据不确定，请审核。";
+export type ExtractionReview = {
+  inputEventIds: string[];
+  contextEventIds: string[];
+  promptHash: string;
+  version: string;
+  requestedModel: string | null;
+  targets: Record<string, string>;
+  proposals: Proposal[];
 };
 export type ExtractionTokens = {
   inputTokens: number;
@@ -94,11 +115,30 @@ export class MemoryStore {
         output_tokens INTEGER,
         PRIMARY KEY (job_id, model)
       );
+      CREATE TABLE IF NOT EXISTS extraction_reviews (
+        job_id INTEGER PRIMARY KEY REFERENCES jobs(id),
+        data TEXT NOT NULL,
+        next_index INTEGER NOT NULL DEFAULT 0
+      );
       CREATE TABLE IF NOT EXISTS receipts (agent TEXT PRIMARY KEY, captured_at TEXT, recalled_at TEXT);
       CREATE TABLE IF NOT EXISTS recalls (binding TEXT PRIMARY KEY, versions TEXT NOT NULL);
     `);
     this.db
       .transaction(() => {
+        const eventColumns = this.db.pragma("table_info(events)") as {
+          name: string;
+        }[];
+        if (!eventColumns.some(({ name }) => name === "turn_id")) {
+          this.db.exec(`
+            ALTER TABLE events ADD COLUMN turn_id TEXT;
+            ALTER TABLE jobs ADD COLUMN turn_id TEXT;
+            ALTER TABLE jobs ADD COLUMN closed_at TEXT;
+            CREATE INDEX events_by_turn ON events(agent, session_id, project_id, turn_id);
+            CREATE INDEX events_by_job ON events(job_id);
+            CREATE UNIQUE INDEX jobs_by_turn
+              ON jobs(agent, session_id, ifnull(project_id, ''), turn_id);
+          `);
+        }
         const columns = this.db.pragma("table_info(extraction_usage)") as {
           name: string;
         }[];
@@ -117,9 +157,14 @@ export class MemoryStore {
     const store = new MemoryStore(home);
     const raw = await readOptional(join(home, "projects.json"));
     store.projects = z.array(ProjectSchema).parse(raw ? JSON.parse(raw) : []);
-    store.db.exec(
-      "UPDATE jobs SET state='pending', error='The service exited before the job finished. Waiting to retry.' WHERE state='running'",
-    );
+    store.db.exec(`
+      UPDATE jobs SET state='skipped',
+        error=CASE WHEN error IS NULL THEN 'No captured turn boundary.'
+          ELSE 'No captured turn boundary. ' || error END
+        WHERE turn_id IS NULL AND state IN ('pending', 'running', 'failed');
+      UPDATE jobs SET state='pending', error='The service exited before the job finished. Waiting to retry.'
+        WHERE state='running';
+    `);
     await store.refresh(true);
     return store;
   }
@@ -377,19 +422,35 @@ export class MemoryStore {
     return this.serial(async () => {
       await this.refresh();
       this.requireProject(input.projectId);
-      const duplicate = [...this.memories.values()].find(
-        (m) =>
-          m.status !== "withdrawn" &&
-          m.scope === input.scope &&
-          m.projectId === input.projectId &&
-          m.content.trim() === input.content.trim(),
-      );
-      if (duplicate) return duplicate;
       const id = Id.parse(fixedId ?? randomUUID());
       const previous = this.memories.get(id);
       if (previous) return previous;
+      const content = scrub(input.content).trim();
+      const duplicate = [...this.memories.values()].find(
+        (m) =>
+          m.status !== "withdrawn" &&
+          m.reason !== legacyCorrectionReason &&
+          m.scope === input.scope &&
+          m.projectId === input.projectId &&
+          m.content === content,
+      );
+      if (duplicate) {
+        if (duplicate.status === "active" && input.status === "candidate")
+          return duplicate;
+        const known = new Set(duplicate.sources.map((source) => source.id));
+        const added = input.sources.filter((source) => !known.has(source.id));
+        const promote =
+          input.status === "active" && duplicate.status === "candidate";
+        if (!added.length && !promote) return duplicate;
+        return this.writeRevision(duplicate, {
+          ...(added.length
+            ? { sources: [...duplicate.sources, ...added] }
+            : {}),
+          ...(promote ? { status: "active", reason: input.reason } : {}),
+        });
+      }
       const now = new Date().toISOString();
-      const { content, ...data } = input;
+      const { content: _, ...data } = input;
       const meta: MemoryMeta = {
         ...data,
         id,
@@ -399,7 +460,7 @@ export class MemoryStore {
       };
       const file = this.memoryPath(meta);
       await mkdir(dirname(file), { recursive: true, mode: 0o700 });
-      await atomicWrite(file, encodeMemory(meta, scrub(content)));
+      await atomicWrite(file, encodeMemory(meta, content));
       await this.refresh(true);
       return this.memories.get(id)!;
     });
@@ -407,9 +468,7 @@ export class MemoryStore {
   async revise(
     id: string,
     revision: number,
-    changes: Partial<
-      Pick<Memory, "title" | "content" | "status" | "reason" | "sources">
-    >,
+    changes: MemoryChanges,
     etag: string,
   ) {
     return this.serial(async () => {
@@ -426,29 +485,61 @@ export class MemoryStore {
           errorMessages.MEMORY_WITHDRAWN,
           "MEMORY_WITHDRAWN",
         );
-      const historyDir = join(this.home, "history", id);
-      await mkdir(historyDir, { recursive: true });
-      await atomicWrite(
-        join(historyDir, `${revision}-${memory.etag.slice(0, 12)}.md`),
-        await readFile(memory.file, "utf8"),
-      );
-      const { content, file, etag: oldEtag, ...meta } = memory;
-      const { content: nextContent, ...metadata } = changes;
-      await atomicWrite(
-        file,
-        encodeMemory(
-          {
-            ...meta,
-            ...metadata,
-            revision: revision + 1,
-            updatedAt: new Date().toISOString(),
-          },
-          scrub(nextContent ?? content),
-        ),
-      );
-      await this.refresh(true);
-      return this.memories.get(id)!;
+      if (
+        memory.reason === legacyCorrectionReason &&
+        memory.status === "candidate" &&
+        changes.status === "active"
+      )
+        throw new AppError(
+          409,
+          errorMessages.MEMORY_CORRECTION_TARGET_MISSING,
+          "MEMORY_CORRECTION_TARGET_MISSING",
+        );
+      if (
+        changes.content !== undefined &&
+        changes.content.trim() !== memory.content &&
+        !changes.sources
+      )
+        changes = {
+          ...changes,
+          sources: [
+            ...memory.sources,
+            {
+              id: `manual:${randomUUID()}`,
+              role: "manual",
+              agent: "manual",
+              excerpt: changes.content.slice(0, 4000),
+              at: new Date().toISOString(),
+            },
+          ],
+        };
+      return this.writeRevision(memory, changes);
     });
+  }
+  private async writeRevision(memory: Memory, changes: MemoryChanges) {
+    const { id } = memory;
+    const historyDir = join(this.home, "history", id);
+    await mkdir(historyDir, { recursive: true });
+    await atomicWrite(
+      join(historyDir, `${memory.revision}-${memory.etag.slice(0, 12)}.md`),
+      await readFile(memory.file, "utf8"),
+    );
+    const { content, file, etag: oldEtag, ...meta } = memory;
+    const { content: nextContent, ...metadata } = changes;
+    await atomicWrite(
+      file,
+      encodeMemory(
+        {
+          ...meta,
+          ...metadata,
+          revision: memory.revision + 1,
+          updatedAt: new Date().toISOString(),
+        },
+        scrub(nextContent ?? content),
+      ),
+    );
+    await this.refresh(true);
+    return this.memories.get(id)!;
   }
   async history(id: string) {
     Id.parse(id);
@@ -466,9 +557,41 @@ export class MemoryStore {
         ),
     );
   }
-  ingest(events: MemoryEvent[]) {
+  async ingestBatch(batch: z.infer<typeof IngestSchema>) {
+    const events = Array.isArray(batch) ? batch : batch.events;
+    const turnEnd = Array.isArray(batch) ? undefined : batch.turnEnd;
+    for (const item of turnEnd ? [...events, turnEnd] : events)
+      if (!item.projectId && item.cwd)
+        item.projectId = (await this.resolveProject(item.cwd, true))?.id;
+    return this.ingest(events, turnEnd);
+  }
+  ingest(events: MemoryEvent[], turnEnd?: TurnEnd) {
     let added = 0;
     this.db.transaction(() => {
+      const now = new Date().toISOString();
+      const lookup = this.db.prepare(
+        "SELECT id FROM jobs WHERE agent=? AND session_id=? AND project_id IS ? AND turn_id=?",
+      );
+      if (turnEnd) {
+        this.requireProject(turnEnd.projectId);
+        const key = [
+          turnEnd.agent,
+          turnEnd.sessionId,
+          turnEnd.projectId ?? null,
+          turnEnd.turnId,
+        ];
+        this.db
+          .prepare(
+            "INSERT OR IGNORE INTO jobs(agent,session_id,project_id,turn_id,closed_at,updated_at) VALUES (?,?,?,?,?,?)",
+          )
+          .run(...key, turnEnd.at, now);
+        const { id } = lookup.get(...key) as { id: number };
+        this.db
+          .prepare(
+            "UPDATE events SET job_id=? WHERE agent=? AND session_id=? AND project_id IS ? AND turn_id=? AND job_id IS NULL",
+          )
+          .run(id, ...key);
+      }
       for (const event of events) {
         if (event.injected || event.worker || isMemoryData(event.content))
           continue;
@@ -476,7 +599,7 @@ export class MemoryStore {
         const saved = { ...event, content: scrub(event.content) };
         const result = this.db
           .prepare(
-            "INSERT OR IGNORE INTO events(id,agent,session_id,project_id,data) VALUES (?,?,?,?,?)",
+            "INSERT OR IGNORE INTO events(id,agent,session_id,project_id,data,turn_id) VALUES (?,?,?,?,?,?)",
           )
           .run(
             event.id,
@@ -484,6 +607,7 @@ export class MemoryStore {
             event.sessionId,
             event.projectId ?? null,
             JSON.stringify(saved),
+            event.turnId ?? null,
           );
         if (!result.changes) continue;
         this.db
@@ -495,32 +619,22 @@ export class MemoryStore {
             "INSERT INTO receipts(agent,captured_at) VALUES (?,?) ON CONFLICT(agent) DO UPDATE SET captured_at=excluded.captured_at",
           )
           .run(event.agent, new Date().toISOString());
-        const pending = this.db
-          .prepare(
-            "SELECT id FROM jobs WHERE agent=? AND session_id=? AND project_id IS ? AND state='pending'",
-          )
-          .get(event.agent, event.sessionId, event.projectId ?? null) as
-          { id: number } | undefined;
-        const jobId =
-          pending?.id ??
-          Number(
-            this.db
-              .prepare(
-                "INSERT INTO jobs(agent,session_id,project_id,updated_at) VALUES (?,?,?,?)",
-              )
-              .run(
-                event.agent,
-                event.sessionId,
-                event.projectId ?? null,
-                new Date().toISOString(),
-              ).lastInsertRowid,
-          );
+        if (!event.turnId) continue;
+        const job = lookup.get(
+          event.agent,
+          event.sessionId,
+          event.projectId ?? null,
+          event.turnId,
+        ) as { id: number } | undefined;
+        if (!job) continue;
         this.db
           .prepare("UPDATE events SET job_id=? WHERE id=?")
-          .run(jobId, event.id);
+          .run(job.id, event.id);
         this.db
-          .prepare("UPDATE jobs SET updated_at=? WHERE id=?")
-          .run(new Date().toISOString(), jobId);
+          .prepare(
+            "UPDATE jobs SET updated_at=? WHERE id=? AND state='pending'",
+          )
+          .run(now, job.id);
       }
     })();
     return added;
@@ -557,6 +671,27 @@ export class MemoryStore {
         usage?.cachedInputTokens ?? null,
       );
   }
+  extractionReview(jobId: number) {
+    const row = this.db
+      .prepare("SELECT data, next_index FROM extraction_reviews WHERE job_id=?")
+      .get(jobId) as { data: string; next_index: number } | undefined;
+    return (
+      row && {
+        review: JSON.parse(row.data) as ExtractionReview,
+        nextIndex: row.next_index,
+      }
+    );
+  }
+  saveExtractionReview(jobId: number, review: ExtractionReview) {
+    this.db
+      .prepare("INSERT INTO extraction_reviews(job_id,data) VALUES (?,?)")
+      .run(jobId, JSON.stringify(review));
+  }
+  advanceExtractionReview(jobId: number, nextIndex: number) {
+    this.db
+      .prepare("UPDATE extraction_reviews SET next_index=? WHERE job_id=?")
+      .run(nextIndex, jobId);
+  }
   jobs() {
     const jobs = this.db
       .prepare("SELECT * FROM jobs ORDER BY id DESC LIMIT 100")
@@ -580,15 +715,31 @@ export class MemoryStore {
       rows.push(row);
       byJob.set(job_id, rows);
     }
-    return jobs.map((job) => ({
-      ...job,
-      usageByModel: byJob.get(job.id) ?? [],
-    }));
+    return jobs.map((job) => {
+      const checkpoint = this.extractionReview(job.id);
+      return {
+        ...job,
+        usageByModel: byJob.get(job.id) ?? [],
+        ...(checkpoint && {
+          review: {
+            inputEventIds: checkpoint.review.inputEventIds,
+            contextEventIds: checkpoint.review.contextEventIds,
+            promptHash: checkpoint.review.promptHash,
+            version: checkpoint.review.version,
+            requestedModel: checkpoint.review.requestedModel,
+            processed: checkpoint.nextIndex,
+            total: checkpoint.review.proposals.length,
+          },
+        }),
+      };
+    });
   }
   events(jobId: number) {
     return (
       this.db
-        .prepare("SELECT data FROM events WHERE job_id=? ORDER BY rowid")
+        .prepare(
+          "SELECT data FROM events WHERE job_id=? ORDER BY json_extract(data,'$.at'), rowid",
+        )
         .all(jobId) as { data: string }[]
     )
       .map((r) => JSON.parse(r.data) as MemoryEvent)
@@ -598,10 +749,38 @@ export class MemoryStore {
       )
       .map(scrubEvent);
   }
+  recentTurnEvents(job: Job) {
+    const rows = this.db
+      .prepare(
+        `
+      SELECT id FROM jobs
+      WHERE agent=? AND session_id=? AND project_id IS ? AND closed_at IS NOT NULL
+        AND (closed_at, id) < (?, ?)
+      ORDER BY closed_at DESC, id DESC LIMIT 2
+    `,
+      )
+      .all(
+        job.agent,
+        job.session_id,
+        job.project_id,
+        job.closed_at,
+        job.id,
+      ) as { id: number }[];
+    return rows.reverse().flatMap(({ id }) => {
+      const events = this.events(id);
+      return [
+        events.find((e) => e.role === "user"),
+        events.findLast((e) => e.role === "assistant"),
+        events.findLast((e) => e.role === "tool"),
+      ]
+        .filter((e) => e !== undefined)
+        .map((e) => ({ ...e, content: e.content.slice(0, 1200) }));
+    });
+  }
   retry(jobId: number) {
     return this.db
       .prepare(
-        "UPDATE jobs SET state='pending',error=NULL,updated_at=? WHERE id=? AND state='failed'",
+        "UPDATE jobs SET state='pending',error=NULL,updated_at=? WHERE id=? AND state='failed' AND turn_id IS NOT NULL",
       )
       .run(new Date().toISOString(), jobId).changes;
   }
@@ -631,19 +810,14 @@ export class MemoryStore {
   }
   async drainSpool() {
     const directory = join(this.home, "spool");
-    const { EventSchema } = await import("../contracts.js");
     for (const file of (await readdir(directory)).filter((f) =>
       f.endsWith(".json"),
     )) {
       const path = join(directory, file);
       try {
-        const events = z
-          .array(EventSchema)
-          .parse(JSON.parse(await readFile(path, "utf8")));
-        for (const event of events)
-          if (!event.projectId && event.cwd)
-            event.projectId = (await this.resolveProject(event.cwd, true))?.id;
-        this.ingest(events);
+        await this.ingestBatch(
+          IngestSchema.parse(JSON.parse(await readFile(path, "utf8"))),
+        );
         await unlink(path);
       } catch (e) {
         const message = `Queued event file ${file}: ${e instanceof Error ? e.message : String(e)}`;

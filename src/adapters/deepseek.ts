@@ -29,6 +29,7 @@ type Context = {
 export function apply(ctx: Context, config: { home?: string } = {}) {
   const home = memoryHome(config.home);
   const client = new MemoryClient(home, 1200);
+  const turns = new Map<string, string>();
   ctx.on("agent/pre-step", async ({ agent }, next) => {
     const decision = await next();
     if (decision.kind === "reject" || process.env.UMEM_WORKER === "1")
@@ -43,7 +44,7 @@ export function apply(ctx: Context, config: { home?: string } = {}) {
         body: {
           query: plainText(user?.content).slice(0, 16000),
           agent: "deepseek",
-          sessionId: agent.id,
+          sessionId: agent.session.id,
           cwd: agent.session.header.cwd,
         },
       });
@@ -62,29 +63,82 @@ export function apply(ctx: Context, config: { home?: string } = {}) {
   });
   ctx.on("session/event", async (session, raw) => {
     if (session.header.parentSession || process.env.UMEM_WORKER === "1") return;
-    const event = z
+    const input = z
       .object({
-        type: z.literal("user/message"),
+        type: z.string(),
         seq: z.number(),
         time: z.number(),
-        data: z.object({
-          content: z.unknown(),
-          source: z.object({ kind: z.literal("user") }),
-        }),
+        data: z.unknown(),
       })
       .safeParse(raw);
-    if (!event.success) return;
-    const content = plainText(event.data.data.content);
-    if (!content || content.includes("<user-memory-context>")) return;
+    if (!input.success) return;
+    const { type, seq, time, data } = input.data;
+    const boundary = z.object({
+      turn: z.number(),
+      reason: z.object({ kind: z.string() }).optional(),
+    });
+    const binding = {
+      agent: "deepseek" as const,
+      sessionId: session.id,
+      cwd: session.header.cwd,
+      at: new Date(time).toISOString(),
+    };
+    if (type === "turn/start" || type === "turn/end") {
+      const parsed = boundary.safeParse(data);
+      if (!parsed.success) return;
+      const turnId = String(parsed.data.turn);
+      if (type === "turn/start") turns.set(session.id, turnId);
+      else {
+        if (turns.get(session.id) === turnId) turns.delete(session.id);
+        if (parsed.data.reason?.kind === "completed")
+          await spoolEvents(home, [], { ...binding, turnId });
+      }
+      return;
+    }
+    let role: "user" | "assistant" | "tool";
+    let content: string;
+    let turnId: string | undefined;
+    if (type === "user/message") {
+      const user = z
+        .object({
+          content: z.unknown(),
+          source: z.object({ kind: z.literal("user") }),
+        })
+        .safeParse(data);
+      if (!user.success) return;
+      role = "user";
+      content = plainText(user.data.content);
+      turnId = turns.get(session.id);
+    } else if (type === "assistant/message" || type === "tool/result") {
+      const result = z
+        .object({
+          turn: z.number(),
+          message: z.object({
+            content: z.unknown(),
+            isError: z.boolean().optional(),
+          }),
+        })
+        .safeParse(data);
+      if (!result.success) return;
+      role = type === "assistant/message" ? "assistant" : "tool";
+      const parts = result.data.message.content;
+      content = plainText(
+        role === "assistant" && Array.isArray(parts)
+          ? parts.filter((part) => part?.type === "text")
+          : parts,
+      );
+      if (role === "tool" && result.data.message.isError && content)
+        content = `工具失败：${content}`;
+      turnId = String(result.data.turn);
+    } else return;
+    if (!content) return;
     await spoolEvents(home, [
       {
-        id: `deepseek:${session.id}:${event.data.seq}`,
-        agent: "deepseek",
-        sessionId: session.id,
-        cwd: session.header.cwd,
-        role: "user",
-        content: content.slice(0, 32000),
-        at: new Date(event.data.time).toISOString(),
+        ...binding,
+        id: `deepseek:${session.id}:${seq}`,
+        turnId,
+        role,
+        content,
         injected: false,
         worker: false,
       },

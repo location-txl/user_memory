@@ -332,6 +332,17 @@ function MemoryDetail({
                 <Pencil size={15} />
                 {t("edit")}
               </button>
+              {m.status === "active" && (
+                <button
+                  disabled={busy}
+                  aria-pressed={m.alwaysRecall === true}
+                  onClick={() => void update({ alwaysRecall: !m.alwaysRecall })}
+                >
+                  {m.alwaysRecall
+                    ? t("disableAlwaysRecall")
+                    : t("enableAlwaysRecall")}
+                </button>
+              )}
               {m.status === "candidate" && (
                 <button
                   className="primary"
