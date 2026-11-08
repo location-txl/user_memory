@@ -4,46 +4,42 @@
 
 **Markdown 是记忆正文和元数据的事实源。** 一个本机 TypeScript 服务负责自动写入；SQLite 保存采集事件、提炼任务、召回回执和搜索索引。没有向量数据库，也不需要额外的模型 API Key：后台提炼使用已登录的 Codex CLI。
 
-## 编译并安装全局命令
+## 安装全局命令
 
-需要 Node.js 24+、pnpm 10、npm，以及可用的 Codex CLI 登录。当前版本优先面向 macOS。源码用 pnpm 安装依赖和编译，编译产物用 npm 安装成全局命令 `umem`。
+需要 Node.js 24+ 和 npm，后台提炼需要已登录的 Codex CLI。当前版本优先面向 macOS。
 
-### 1. 编译与打包
+```sh
+npm install --global @location-txl/umem
+umem --version
+umem --help
+```
 
-在本项目根目录运行：
+如果提示 `umem: command not found`，先查看 `npm prefix --global`，确认该目录下的 `bin` 已在 `PATH` 中。使用 nvm 等 Node 版本管理器时，全局安装通常属于当前 Node 版本；切换 Node 版本后可能需要重新安装。
+
+### 从源码安装
+
+使用 pnpm 10，在项目根目录运行以下命令。
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm build
 npm pack
+npm install --global ./location-txl-umem-0.1.1.tgz
 ```
 
-`pnpm build` 生成 `dist/`，包含 CLI、服务端和网页。`npm pack` 将它们和适配器打成安装包；当前版本的文件名为 `local-user-memory-0.1.0.tgz`。以后版本号变化时，以下命令使用 `npm pack` 实际输出的文件名。
-
-### 2. 使用 npm 安装到全局
-
-```sh
-npm install --global ./local-user-memory-0.1.0.tgz
-umem --version
-umem --help
-```
-
-这会安装本地编译的包，无需发布到 npm registry。全局安装后，可以在任意目录运行 `umem`。
-
-如果提示 `umem: command not found`，先查看 `npm prefix --global`，确认该目录下的 `bin` 已在 `PATH` 中。使用 nvm 等 Node 版本管理器时，全局安装通常属于当前 Node 版本；切换 Node 版本后可能需要重新安装。
+`pnpm build` 生成 CLI、服务端和网页。`npm pack` 将它们和 Hermes 适配器打成安装包，安装时使用它实际输出的文件名。
 
 ## 初始化并启动公共记忆
 
-首次使用执行：
+在 macOS 上，首次使用执行：
 
 ```sh
-umem init
-umem serve
+umem service install
 ```
 
-`umem init` 创建默认数据目录 `~/.user-memory`、配置和访问密钥，重复执行会保留已有记忆。`umem serve` 也会自动初始化数据目录，可以直接运行。服务在当前终端前台运行，按 `Ctrl+C` 停止。
+`umem service install` 会初始化数据目录、立即启动后台服务，并设置为登录 macOS 后自动启动。
 
-另开一个终端打开管理页、检查状态：
+服务启动后，在当前终端打开管理页、检查状态：
 
 ```sh
 umem web
@@ -52,15 +48,24 @@ umem doctor
 
 服务默认监听 `127.0.0.1:43123`。`web` 用 URL fragment 传递本机访问密钥，页面读取后立即移除 fragment，密钥只留在当前标签页的 sessionStorage。直接打开裸 URL 不会自动获得访问权限。
 
-CLI 按 `--home`、`UMEM_HOME`、`~/.user-memory` 的顺序选择数据目录。使用默认目录时直接运行 `umem` 命令即可。自定义目录时，在执行命令的终端设置 `UMEM_HOME`，或在命令中显式指定目录：
+数据目录依次采用 `--home`、`UMEM_HOME`、默认目录 `~/.umem`。使用自定义目录时，在执行命令的终端设置 `UMEM_HOME`，或在命令中显式指定目录：
 
 ```sh
-umem --home /绝对路径/公共记忆 init
-umem --home /绝对路径/公共记忆 serve
+umem --home /绝对路径/公共记忆 service install
 umem --home /绝对路径/公共记忆 web
 ```
 
-开发界面使用 `pnpm dev`；后台仍需启动。日常使用构建后的管理页即可。`umem serve --no-worker` 暂停自动提炼，仍接受采集、检索和显式写入；此参数只影响本次运行。
+### 服务管理与前台运行
+
+```sh
+umem service install --dry-run  # 查看启动项路径
+umem service install --force    # 替换启动项配置并重新加载
+umem service uninstall          # 停止服务并移除启动项
+```
+
+普通安装会保留已有启动项配置。修改启动项的 Node 路径或数据目录时，使用 `install --force` 重启服务。
+
+`umem serve` 是登录启动项调用的服务入口。其他系统或需要前台调试时也可以直接运行它，按 `Ctrl+C` 停止。前台调试前先停用已运行的服务。`--no-worker` 仅在本次运行暂停自动提炼，采集、检索和显式写入仍可用。
 
 ## Codex 如何初始化接入
 
@@ -85,7 +90,7 @@ codex login status
 
 ### 2. 给 Codex 安装公共记忆配置
 
-保持 `umem serve` 运行，在另一个终端执行：
+启动公共记忆服务后执行：
 
 ```sh
 umem setup codex --dry-run  # 可选，预览将修改哪些文件
@@ -130,7 +135,7 @@ umem doctor
 
 ## 更新或卸载全局命令
 
-更新时，在源码目录重新执行 `pnpm install --frozen-lockfile`、`pnpm build`、`npm pack`，再用 `npm install --global ./新安装包.tgz` 覆盖安装。更新前先停止正在运行的服务，更新后重新启动。`~/.user-memory` 独立于 npm 安装目录，更新不会清空已有数据。
+更新前先执行 `umem service uninstall` 停止登录服务，再执行 `npm install --global @location-txl/umem@latest` 更新，最后执行 `umem service install` 重新启动。使用自定义数据目录时，重新安装服务须传入原目录。数据目录独立于 npm 安装目录，更新会保留已有数据。
 
 已接入 Claude Code 的用户需要重新执行 `umem setup claude`，然后重启 Claude Code，使新增的 `StopFailure` 和 `SessionEnd` hooks 生效。
 
@@ -139,11 +144,11 @@ umem doctor
 ```sh
 umem uninstall codex
 # 其他已接入工具也分别执行 umem uninstall <agent>
-# 随后停止 umem serve；若装过登录启动项，也先停用并移除它
-npm uninstall --global @local/user-memory
+umem service uninstall
+npm uninstall --global @location-txl/umem
 ```
 
-卸载全局包不会删除记忆数据。macOS 登录启动项的停用方式见文末。
+卸载全局包会保留记忆数据。
 
 ## 接入工具
 
@@ -250,7 +255,7 @@ umem import /项目记忆目录 --project <project-id>
 只读取全局及已登记项目目录直属的 Markdown 文件。文件名、范围和项目必须与所在目录一致，错放文件会报告错误且不加载。旧版平铺目录不再读取，不提供迁移或兼容。
 
 ```text
-~/.user-memory/
+~/.umem/
 ├── memories/
 │   ├── global/
 │   │   └── <id>.md         # 全局记忆，Markdown 事实源
@@ -360,18 +365,7 @@ pnpm test:web
 
 `pnpm test:backend` 在临时目录测试 Markdown、SQLite 和后端接口，包括 Hermes 的 Python 用例，无需启动服务。只改记忆模块时可运行 `pnpm exec vitest run tests/backend/memory/`。`pnpm test:integration` 验证本机 HTTP、真实 MCP stdio 和 CLI 子进程。`pnpm test` 运行全部 TypeScript 用例。PR 会自动执行类型检查、完整 TypeScript 测试和 Hermes 测试，纯文档变更跳过。触发范围见[验收记录](docs/verification.md#github-actions)。
 
-网页测试默认在 macOS 使用安装好的 Chrome。其他环境先执行 `pnpm exec playwright install chromium`，或通过 `UMEM_BROWSER_CHANNEL` 选择安装的浏览器。测试数据均在临时目录，截图放在 `.test-output/`。
-
-macOS 登录启动项：
-
-```sh
-umem service install --dry-run  # 查看启动项路径
-umem service install            # 先停止手动运行的 umem serve
-umem service install --force    # 替换启动项配置并重新加载
-umem service uninstall          # 停止服务并移除启动项
-```
-
-普通安装会保留已有启动项配置，若已加载则直接返回。要更新启动项使用的 Node 路径或 `--home`，请使用 `install --force`，服务会短暂重启。卸载保留宿主接入配置和记忆数据。
+开发网页时用 `pnpm dev`，并启动本地后端。网页测试默认在 macOS 使用安装好的 Chrome。其他环境先执行 `pnpm exec playwright install chromium`，或通过 `UMEM_BROWSER_CHANNEL` 选择安装的浏览器。测试数据均在临时目录，截图放在 `.test-output/`。
 
 ## 项目文件
 

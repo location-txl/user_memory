@@ -79,7 +79,7 @@ test("普通安装保留原配置，强制安装替换并重载，卸载保留�
   expect(await readFile(path, "utf8")).toContain(
     "<string>--home</string><string>" +
       join(home, "memory &amp; data") +
-      "</string>",
+      "</string><string>serve</string>",
   );
   expect(launchctl.mock.calls.map(([args]) => args)).toEqual([
     ["print", target],

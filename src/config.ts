@@ -20,7 +20,7 @@ export const ConfigSchema = z.object({
   workerTimeoutSeconds: z.number().int().min(1).default(180),
 });
 export type Config = z.infer<typeof ConfigSchema>;
-const defaultMemoryHome = () => join(homedir(), ".user-memory");
+const defaultMemoryHome = () => resolve(homedir(), ".umem");
 
 export function memoryHome(value?: string) {
   return resolve(value ?? process.env.UMEM_HOME ?? defaultMemoryHome());

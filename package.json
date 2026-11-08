@@ -1,9 +1,21 @@
 {
-  "name": "@local/user-memory",
-  "version": "0.1.0",
-  "private": true,
+  "name": "@location-txl/umem",
+  "version": "0.1.1",
   "type": "module",
   "description": "以 Markdown 为准的单机跨 Agent 公共记忆",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/location-txl/user_memory.git"
+  },
+  "files": [
+    "dist",
+    "adapters/hermes/__init__.py",
+    "adapters/hermes/plugin.yaml"
+  ],
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
   "bin": {
     "umem": "dist/cli.js"
   },

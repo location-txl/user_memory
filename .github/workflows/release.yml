@@ -1,0 +1,141 @@
+name: 发布 npm 和 GitHub Release
+
+on:
+  push:
+    tags:
+      - "[0-9]*"
+      - "v[0-9]*"
+
+permissions: {}
+
+jobs:
+  pack:
+    name: 构建发布包
+    if: github.event.created
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    cache-mode: read
+    outputs:
+      dist-tag: ${{ steps.version.outputs.dist-tag }}
+    steps:
+      - name: 解析标签版本
+        id: version
+        shell: bash
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          number='(0|[1-9][0-9]*)'
+          identifier="($number|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+          semver="^$number\.$number\.$number(-$identifier(\.$identifier)*)?$"
+          if [[ ! $version =~ $semver ]]; then
+            echo '::error::发布标签必须是 SemVer，可带 v 前缀，不能带 + 构建元数据。'
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ $version == *-* ]]; then
+            echo 'dist-tag=next' >> "$GITHUB_OUTPUT"
+          else
+            echo 'dist-tag=latest' >> "$GITHUB_OUTPUT"
+          fi
+      - name: 获取标签代码
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: 设置 pnpm
+        run: |
+          mkdir -p "$RUNNER_TEMP/pnpm-bin"
+          corepack enable --install-directory "$RUNNER_TEMP/pnpm-bin" pnpm
+          echo "$RUNNER_TEMP/pnpm-bin" >> "$GITHUB_PATH"
+      - name: 设置 Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: 安装依赖
+        run: |
+          export npm_config_nodedir="$(dirname "$(dirname "$(command -v node)")")"
+          pnpm install --frozen-lockfile
+      - name: 写入发布版本
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          npm version "$RELEASE_VERSION" --no-git-tag-version --ignore-scripts --allow-same-version
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import { parseDocument } from 'yaml';
+
+          const path = 'adapters/hermes/plugin.yaml';
+          const plugin = parseDocument(readFileSync(path, 'utf8'));
+          plugin.set('version', process.env.RELEASE_VERSION);
+          writeFileSync(path, String(plugin));
+          NODE
+      - name: 构建并校验发布包
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          pnpm build
+          if [[ $(node dist/cli.js --version) != "$RELEASE_VERSION" ]]; then
+            echo '::error::CLI 版本与发布标签不一致。'
+            exit 1
+          fi
+          tarball=$(npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP")
+          tar -xOf "$RUNNER_TEMP/$tarball" package/package.json | node -e '
+            const manifest = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+            if (manifest.name !== "@location-txl/umem" || manifest.version !== process.env.RELEASE_VERSION) {
+              throw new Error("npm 包名或版本与发布目标不一致");
+            }
+          '
+          mv "$RUNNER_TEMP/$tarball" "$RUNNER_TEMP/package.tgz"
+      - name: 保存 npm 发布包
+        uses: actions/upload-artifact@v7
+        with:
+          name: npm-package
+          path: ${{ runner.temp }}/package.tgz
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+          overwrite: true
+
+  publish:
+    name: 发布到 npm
+    needs: pack
+    runs-on: ubuntu-24.04
+    permissions:
+      id-token: write
+    steps:
+      - name: 设置 Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: 下载 npm 发布包
+        uses: actions/download-artifact@v8
+        with:
+          name: npm-package
+      - name: 发布 npm 包
+        env:
+          NPM_DIST_TAG: ${{ needs.pack.outputs.dist-tag }}
+        run: npm publish ./package.tgz --ignore-scripts --access public --tag "$NPM_DIST_TAG"
+
+  release:
+    name: 创建 GitHub Release
+    needs: [pack, publish]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: 发布 GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NPM_DIST_TAG: ${{ needs.pack.outputs.dist-tag }}
+        run: |
+          flags=()
+          if [[ $NPM_DIST_TAG == next ]]; then
+            flags+=(--prerelease --latest=false)
+          fi
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" --verify-tag --generate-notes "${flags[@]}"

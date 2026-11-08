@@ -34,7 +34,7 @@ test.each(["default", "environment", "flag overrides environment"])(
   async (selection) => {
     const base = await mkdtemp(join(tmpdir(), "umem-cli-language-"));
     try {
-      const defaultHome = join(base, ".user-memory");
+      const defaultHome = join(base, ".umem");
       const customHome = join(base, "custom data");
       const env: NodeJS.ProcessEnv = {
         ...process.env,
@@ -70,6 +70,22 @@ test.each(["default", "environment", "flag overrides environment"])(
     }
   },
 );
+
+test("init uses ~/.umem by default", async () => {
+  const base = await mkdtemp(join(tmpdir(), "umem-cli-home-"));
+  try {
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: base,
+      USERPROFILE: base,
+    };
+    delete env.UMEM_HOME;
+    const { stdout } = await cli(["init"], env);
+    expect(JSON.parse(stdout)).toEqual({ home: join(base, ".umem") });
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
 
 test("unknown CLI options fail with English diagnostics", async () => {
   const result = await cli(["--not-a-real-option"]).then(

@@ -18,14 +18,15 @@ import {
   uninstall,
 } from "./integrations/setup.js";
 import { AgentSchema, type Memory } from "./contracts.js";
+import { version } from "./version.js";
 
 const program = new Command()
   .name("umem")
   .description("Local cross-agent shared memory")
-  .version("0.1.0")
+  .version(version)
   .option(
     "--home <path>",
-    "Shared memory data directory (default: UMEM_HOME or ~/.user-memory)",
+    "Shared memory data directory (default: UMEM_HOME or ~/.umem)",
   );
 const home = () => memoryHome(program.opts().home);
 const client = () => new MemoryClient(home());
