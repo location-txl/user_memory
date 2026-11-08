@@ -223,9 +223,15 @@ memory
   .option("--all", "List all projects")
   .action(async (o) =>
     print(
-      await client().request(
-        `/memories?${new URLSearchParams({ status: o.status, ...(o.query ? { q: o.query } : {}), ...(o.project ? { projectId: o.project } : {}), ...(o.all ? { all: "true" } : {}) })}`,
-      ),
+      await client().request("/memories/search", {
+        method: "POST",
+        body: {
+          status: o.status,
+          query: o.query,
+          projectId: o.project,
+          allProjects: !!o.all,
+        },
+      }),
     ),
   );
 memory

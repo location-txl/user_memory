@@ -83,15 +83,20 @@ export function createMcp(home: string, agent: Agent = "manual") {
     {
       description:
         "当前上下文缺少所需偏好、项目约定或历史决策时搜索；传入当前 cwd 或 projectId。返回最多 12 条摘录，应用截断的结果前先调用 memory_get。",
-      inputSchema: { ...context, query: z.string() },
+      inputSchema: { ...context, query: z.string().max(16000) },
       annotations: { readOnlyHint: true },
     },
     (input, { requestId }) =>
       result(requestId, async () => {
         const scope = await binding(input);
-        const memories = await client.request<Memory[]>(
-          `/memories?${new URLSearchParams({ q: input.query, status: "active", ...(scope.projectId ? { projectId: scope.projectId } : {}) })}`,
-        );
+        const memories = await client.request<Memory[]>("/memories/search", {
+          method: "POST",
+          body: {
+            query: input.query,
+            status: "active",
+            projectId: scope.projectId,
+          },
+        });
         const search = {
           projectId: scope.projectId ?? null,
           total: memories.length,

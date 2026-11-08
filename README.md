@@ -137,6 +137,8 @@ umem doctor
 
 更新前先执行 `umem service uninstall` 停止登录服务，再执行 `npm install --global @location-txl/umem@latest` 更新，最后执行 `umem service install` 重新启动。使用自定义数据目录时，重新安装服务须传入原目录。数据目录独立于 npm 安装目录，更新会保留已有数据。
 
+从旧版升级时注意：默认数据目录已从 `~/.user-memory` 改为 `~/.umem`，不会自动迁移或读取旧目录。先检查现有服务与 MCP/hooks 配置中的 `--home`、`UMEM_HOME`，备份实际数据目录，再使用同一目录重新安装服务及接入配置，例如 `umem --home ~/.user-memory service install`。不要把新目录中的空列表当作旧数据被删除，也不要直接覆盖或合并两个目录。更早的平铺记忆格式需另行核验兼容性；仅指定旧路径不保证加载所有历史格式。
+
 已接入 Claude Code 的用户需要重新执行 `umem setup claude`，然后重启 Claude Code，使新增的 `StopFailure` 和 `SessionEnd` hooks 生效。
 
 卸载时，先撤销已接入工具的配置，再卸载命令：

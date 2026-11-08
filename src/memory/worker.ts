@@ -294,11 +294,29 @@ export class MemoryWorker {
           );
           this.store.advanceExtractionReview(job.id, index + 1);
         }
-        this.store.db
-          .prepare(
-            "UPDATE jobs SET state='done',error=NULL,updated_at=? WHERE id=?",
-          )
-          .run(new Date().toISOString(), job.id);
+        // No await between checking the capture snapshot and committing state:
+        // ingestion cannot race this decision on the service's event loop.
+        const capturedIds = new Set(
+          review.capturedEventIds ?? review.inputEventIds,
+        );
+        const hasLateEvents = this.store
+          .events(job.id)
+          .some((event) => !capturedIds.has(event.id));
+        this.store.db.transaction(() => {
+          if (hasLateEvents)
+            this.store.db
+              .prepare("DELETE FROM extraction_reviews WHERE job_id=?")
+              .run(job.id);
+          this.store.db
+            .prepare(
+              "UPDATE jobs SET state=?,error=NULL,updated_at=? WHERE id=?",
+            )
+            .run(
+              hasLateEvents ? "pending" : "done",
+              new Date().toISOString(),
+              job.id,
+            );
+        })();
       } catch (e) {
         this.store.db
           .prepare(
@@ -428,6 +446,7 @@ export class MemoryWorker {
     }
     return {
       inputEventIds: reviewEvents.map((event) => event.id),
+      capturedEventIds: captured.map((event) => event.id),
       contextEventIds: recentEvents.map((event) => event.id),
       promptHash: fingerprint(PROMPT),
       version,

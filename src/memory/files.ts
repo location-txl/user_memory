@@ -11,16 +11,24 @@ export function decodeMemory(raw: string, file: string): Memory {
   const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)([\s\S]*)$/.exec(raw);
   if (!match) throw new Error(`${file}: Missing YAML frontmatter`);
   const meta = MemoryMetaSchema.parse(parse(match[1], { maxAliasCount: 0 }));
-  return { ...meta, content: match[2].trim(), file, etag: fingerprint(raw) };
+  return {
+    ...scrubMeta(meta),
+    content: scrub(match[2].trim()),
+    file,
+    // Optimistic concurrency must compare the original bytes, not the projection.
+    etag: fingerprint(raw),
+  };
 }
-export function encodeMemory(meta: MemoryMeta, content: string) {
-  const safe = {
+function scrubMeta(meta: MemoryMeta): MemoryMeta {
+  return {
     ...meta,
     title: scrub(meta.title),
     reason: meta.reason && scrub(meta.reason),
     sources: meta.sources.map((s) => ({ ...s, excerpt: scrub(s.excerpt) })),
   };
-  return `---\n${stringify(MemoryMetaSchema.parse(safe)).trimEnd()}\n---\n\n${scrub(content).trim()}\n`;
+}
+export function encodeMemory(meta: MemoryMeta, content: string) {
+  return `---\n${stringify(MemoryMetaSchema.parse(scrubMeta(meta))).trimEnd()}\n---\n\n${scrub(content).trim()}\n`;
 }
 export function fingerprint(value: string) {
   return createHash("sha256").update(value).digest("hex");

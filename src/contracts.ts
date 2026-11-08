@@ -120,3 +120,11 @@ export const ExtractionSchema = z.object({
 export type Extraction = z.infer<typeof ExtractionSchema>;
 export type Proposal = z.infer<typeof ProposalSchema>;
 export { AppError } from "./errors.js";
+
+export const MemorySearchSchema = z.object({
+  query: z.string().max(16000).optional(),
+  projectId: Id.optional(),
+  scope: z.enum(["global", "project"]).optional(),
+  status: z.enum(["active", "candidate", "withdrawn"]).optional(),
+  allProjects: z.boolean().optional(),
+});

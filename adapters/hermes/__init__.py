@@ -14,6 +14,35 @@ from agent.memory_provider import MemoryProvider
 logger = logging.getLogger(__name__)
 
 
+def scrub(value):
+    """Redact nested tool JSON before truncation can break its string boundaries."""
+    marker = "[已隐去凭据]"
+
+    def redact_string(match):
+        literal = match.group(0)
+        if "\\" not in literal:
+            return literal
+        decoded = json.loads(literal)
+        safe = scrub(decoded)
+        return literal if safe == decoded else json.dumps(safe, ensure_ascii=False)
+
+    value = re.sub(r'"(?:\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})|[^"\\\x00-\x1f])*"', redact_string, value)
+    value = re.sub(r"\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,})\b", marker, value)
+    value = re.sub(r"\b(Bearer\s+)[A-Za-z0-9._~-]{12,}", r"\1" + marker, value, flags=re.I)
+
+    def redact_field(match):
+        key, credential = match.groups()
+        quote = ('"' if credential.startswith('"') or re.search(r'"\s*[:=]\s*$', key)
+                 else "'" if credential.startswith("'") or re.search(r"'\s*[:=]\s*$", key)
+                 else "")
+        return key + quote + marker + quote
+
+    return re.sub(
+        r"""((?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|password|secret)["']?\s*[:=]\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\[已隐去凭据\]|[^\s,;}\]]+)""",
+        redact_field, value, flags=re.I,
+    )
+
+
 class UserMemoryProvider(MemoryProvider):
     @property
     def name(self):
@@ -58,9 +87,7 @@ class UserMemoryProvider(MemoryProvider):
         for role, content in [("user", user_content), ("assistant", assistant_content)]:
             if not content or "<user-memory-context>" in content:
                 continue
-            content = re.sub(r"\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,})\b", "[已隐去凭据]", content)
-            content = re.sub(r"\b(Bearer\s+)[A-Za-z0-9._~-]{12,}", r"\1[已隐去凭据]", content, flags=re.I)
-            content = re.sub(r"((?:api[_-]?key|access[_-]?token|password|secret)\s*[:=]\s*)[^\s,;]+", r"\1[已隐去凭据]", content, flags=re.I)
+            content = scrub(content)
             events.append({"id": f"hermes:{session}:{turn}:{role}", "agent": "hermes", "sessionId": session, "turnId": turn,
                            **({"cwd": self.cwd} if self.cwd else {}), "role": role, "content": content[:32000],
                            "at": datetime.now(timezone.utc).isoformat(), "injected": False, "worker": False})

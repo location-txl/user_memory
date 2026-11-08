@@ -64,16 +64,16 @@ export function Library({
     setLoading(true);
     const timeout = setTimeout(
       () => {
-        const params = new URLSearchParams({
+        const body = {
           status: filter,
-          q: query,
+          query,
           ...(scope === "global"
             ? { scope: "global" }
             : scope === "all"
-              ? { all: "true" }
+              ? { allProjects: true }
               : { scope: "project", projectId: scope }),
-        });
-        api<Memory[]>(`/memories?${params}`)
+        };
+        api<Memory[]>("/memories/search", { method: "POST", body })
           .then(
             (data) => {
               if (live) {

@@ -7,6 +7,7 @@ import {
   CreateMemorySchema,
   IngestSchema,
   RecallSchema,
+  MemorySearchSchema,
   Id,
 } from "./contracts.js";
 import type { MemoryStore } from "./memory/store.js";
@@ -25,7 +26,7 @@ import {
   nativeLocations,
   previewImport,
 } from "./integrations/import.js";
-import { ConfigSchema, atomicWrite, canOmitHome } from "./config.js";
+import { ConfigPatchSchema, atomicWrite, canOmitHome } from "./config.js";
 import { join } from "node:path";
 import { McpCallFilters, readMcpCalls } from "./mcp-calls.js";
 
@@ -147,6 +148,13 @@ export function createApp(
           allProjects: c.req.query("all") === "true",
         })
       ).map(memoryData),
+    ),
+  );
+  app.post("/v1/memories/search", async (c) =>
+    c.json(
+      (await store.list(MemorySearchSchema.parse(await c.req.json()))).map(
+        memoryData,
+      ),
     ),
   );
   app.get("/v1/memories/:id/history", async (c) =>
@@ -273,9 +281,7 @@ export function createApp(
   app.patch("/v1/config", async (c) => {
     if (!worker)
       throw new AppError(503, "后台提炼器未启动", "WORKER_UNAVAILABLE");
-    const patch = ConfigSchema.omit({ port: true })
-      .partial()
-      .parse(await c.req.json());
+    const patch = ConfigPatchSchema.parse(await c.req.json());
     await atomicWrite(
       join(store.home, "config.json"),
       JSON.stringify({ ...worker.config, ...patch }, null, 2),
